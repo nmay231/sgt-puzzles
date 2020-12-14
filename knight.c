@@ -162,7 +162,7 @@ static void free_game(game_state* state) {
 struct game_state* fill_grid(int w, int h) {
     assert(w > 5 && h > 5);
     struct game_state* gs;
-    random_state* rs = random_new("654123", 6);
+    random_state* rs = random_new("123456", 6);
 
 generate_grid:
     gs = snew(game_state);
@@ -176,12 +176,10 @@ generate_grid:
     gs->ncells = gs->size - gs->nunvisited;
 
     gs->grid = snewn(w * h, unsigned char);
+    memset(gs->grid, 0, w * h * sizeof(unsigned char));
     gs->moves = snewn(gs->ncells - 1, int);
 
     int i;
-    for (i = 0; i < w * h; i++)
-        gs->grid[i] = 9;
-
     for (i = 0; i < gs->ncells - 1; i++)
         gs->moves[i] = -1;
 
@@ -202,7 +200,7 @@ generate_grid:
         for (i = 0; i < 8; i++) {
             int tmp = attempt_move(pos, knight_moves[moves_i[i]], gs->w, gs->h);
 
-            if (tmp >= 0 && gs->grid[tmp] == 9) {
+            if (tmp >= 0 && !gs->grid[tmp]) {
                 int num = num_neighbors(gs->grid, tmp, gs->w, gs->h);
 
                 if (num < min_neigh) {
@@ -230,10 +228,6 @@ generate_grid:
     }
 
     gs->ends[1] = pos;
-
-    for (i = 0; i < gs->size; i++)
-        if (gs->grid[i] == 9)
-            gs->grid[i] = 0;
 
     return gs;
 }

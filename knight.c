@@ -7,14 +7,8 @@
 
 #include "puzzles.h"
 
-enum { COL_BACKGROUND, NCOLOURS };
-
-struct game_params {
-    int w;
-    int h;
-};
-
-static const struct game_params knight_presets[] = {{6, 6}, {7, 7}};
+#define BORDER 10
+#define PREFERRED_TILE_SIZE 20
 
 struct pair {
     int x;
@@ -32,6 +26,16 @@ static const pair knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
     {3, 4}, {3, 5}, {3, 6}, {3, 7}, {4, 5}, {4, 6}, {4, 7}, {5, 6}, {5, 7},
     {6, 7}, {8, 0}, {8, 1}, {8, 2}, {8, 3}, {8, 4}, {8, 5}, {8, 6}, {8, 7}};
  */
+
+struct game_params {
+    int w;
+    int h;
+    /* bool full_board;
+    int missing; */
+};
+
+static const struct game_params knight_presets[] = {{6, 6}, {7, 7}};
+
 struct game_state {
     int w, h, size; /* width, height, size = w * h */
     int nunvisited; /* Number of cells not visited in the tour */
@@ -321,11 +325,14 @@ static game_state* execute_move(const game_state* state, const char* move) {
  * Drawing routines.
  */
 
+enum { COL_BACKGROUND, COL_OUTLINE, COL_PATH, NCOLOURS };
+
 static void game_compute_size(const game_params* params,
                               int tilesize,
                               int* x,
                               int* y) {
-    *x = *y = 10 * tilesize; /* FIXME */
+    *x = params->w * tilesize + 2 * BORDER;
+    *y = params->h * tilesize + 2 * BORDER;
 }
 
 static void game_set_size(drawing* dr,
@@ -339,6 +346,14 @@ static float* game_colours(frontend* fe, int* ncolours) {
     float* ret = snewn(3 * NCOLOURS, float);
 
     frontend_default_colour(fe, &ret[COL_BACKGROUND * 3]);
+
+    ret[COL_OUTLINE * 3 + 0] = 0.5F;
+    ret[COL_OUTLINE * 3 + 1] = 0.5F;
+    ret[COL_OUTLINE * 3 + 2] = 0.5F;
+
+    ret[COL_PATH * 3 + 0] = 0.0F;
+    ret[COL_PATH * 3 + 1] = 0.0F;
+    ret[COL_PATH * 3 + 2] = 0.0F;
 
     *ncolours = NCOLOURS;
     return ret;
@@ -366,14 +381,22 @@ static void game_redraw(drawing* dr,
                         const game_ui* ui,
                         float animtime,
                         float flashtime) {
-    /*
-     * The initial contents of the window are not guaranteed and
-     * can vary with front ends. To be on the safe side, all games
-     * should start by drawing a big background-colour rectangle
-     * covering the whole window.
-     */
-    draw_rect(dr, 0, 0, 10 * ds->tilesize, 10 * ds->tilesize, COL_BACKGROUND);
-    draw_update(dr, 0, 0, 10 * ds->tilesize, 10 * ds->tilesize);
+    int w = 6, h = 6;
+    /* int w = state->w, h = state->h; */
+
+    draw_rect(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
+              h * ds->tilesize + 2 * BORDER, COL_BACKGROUND);
+
+    int x, y;
+    for (x = BORDER; x <= w * ds->tilesize + BORDER; x += ds->tilesize) {
+        draw_line(dr, x, BORDER, x, BORDER + h * ds->tilesize, COL_OUTLINE);
+    }
+    for (y = BORDER; y <= h * ds->tilesize + BORDER; y += ds->tilesize) {
+        draw_line(dr, BORDER, y, BORDER + w * ds->tilesize, y, COL_OUTLINE);
+    }
+
+    draw_update(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
+                h * ds->tilesize + 2 * BORDER);
 }
 
 static float game_anim_length(const game_state* oldstate,
@@ -439,7 +462,7 @@ const struct game thegame = {
     game_changed_state,
     interpret_move,
     execute_move,
-    32,
+    PREFERRED_TILE_SIZE,
     game_compute_size,
     game_set_size,
     game_colours,

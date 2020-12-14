@@ -189,7 +189,7 @@ generate_grid:
     int moves_i[8] = {0, 1, 2, 3, 4, 5, 6, 7};
     int move_i = -1, prev_move_i;
 
-    int cells_left = gs->ncells;
+    int cells_left = gs->ncells - 1;
 
     while (cells_left > 0) {
         shuffle(moves_i, 8, sizeof(int), gs->rs);

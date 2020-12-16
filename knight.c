@@ -16,16 +16,29 @@ struct pair {
 };
 typedef struct pair pair;
 
+/**
+ * All of the knight's moves ordered clockwise.
+ * knight_moves[0] is approximately 1:15 o'clock.
+ *
+ * Note: since moves that are orthogonal to each other are 2, 4,
+ * or 6 apart in the list, it will be common to add the indexes
+ * of two moves (mod 2) to check if they are orthogonal (or not).
+ *
+ * Also, knight_moves[8]={0, 0} helps with finding unique solutions.
+ */
 static const pair knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
                                      {1, 2},   {-1, 2},  {-2, 1},
                                      {-2, -1}, {-1, -2}, {0, 0}};
 
-/* static const int all_conns[36][2] = {
-    {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}, {0, 6}, {0, 7}, {1, 2}, {1, 3},
-    {1, 4}, {1, 5}, {1, 6}, {1, 7}, {2, 3}, {2, 4}, {2, 5}, {2, 6}, {2, 7},
-    {3, 4}, {3, 5}, {3, 6}, {3, 7}, {4, 5}, {4, 6}, {4, 7}, {5, 6}, {5, 7},
-    {6, 7}, {8, 0}, {8, 1}, {8, 2}, {8, 3}, {8, 4}, {8, 5}, {8, 6}, {8, 7}};
+/* (Almost) all combinations of choosing 2 of 9 ints, i.e. 9 choose 2.
+ * The values are indexes of knight_moves in and out of the cell.
+ * {8, 8} is missing because at least one move must go out of the cell.
  */
+static const int all_conns[36][2] = {
+    {8, 7}, {8, 6}, {8, 5}, {8, 4}, {8, 3}, {8, 2}, {8, 1}, {8, 0}, {7, 6},
+    {7, 5}, {6, 5}, {7, 4}, {6, 4}, {5, 4}, {7, 3}, {6, 3}, {5, 3}, {4, 3},
+    {7, 2}, {6, 2}, {5, 2}, {4, 2}, {3, 2}, {7, 1}, {6, 1}, {5, 1}, {4, 1},
+    {3, 1}, {2, 1}, {7, 0}, {6, 0}, {5, 0}, {4, 0}, {3, 0}, {2, 0}, {1, 0}};
 
 struct game_params {
     int w;
@@ -50,7 +63,7 @@ struct game_state {
      *    2. A cell where an orthogonal turn was made
      *    3. A cell where a non-orthogonal turn was made
      */
-    unsigned char* grid;
+    int* grid;
 
     int* moves;
 
@@ -94,7 +107,7 @@ static void decode_params(game_params* params, char const* string) {
     char const* p = string;
 
     params->w = atoi(p);
-    while (*p && isdigit((unsigned char)*p))
+    while (*p && isdigit((int)*p))
         p++;
     if (*p == 'x') {
         p++;
@@ -128,7 +141,7 @@ int attempt_move(int pos, pair move, int w, int h) {
     return -1;
 }
 
-int num_neighbors(unsigned char* grid, int pos, int w, int h) {
+int num_neighbors(int* grid, int pos, int w, int h) {
     int count = 0, i;
     for (i = 0; i < 8; i++) {
         pair move = knight_moves[i];
@@ -179,8 +192,8 @@ generate_grid:
     gs->ends[0] = random_upto(gs->rs, gs->size);
     gs->ncells = gs->size - gs->nunvisited;
 
-    gs->grid = snewn(w * h, unsigned char);
-    memset(gs->grid, 0, w * h * sizeof(unsigned char));
+    gs->grid = snewn(w * h, int);
+    memset(gs->grid, 0, w * h * sizeof(int));
     gs->moves = snewn(gs->ncells - 1, int);
 
     int i;
@@ -236,13 +249,38 @@ generate_grid:
     return gs;
 }
 
-void print_grid(unsigned char* grid, int w, int h) {
+void print_grid(int* grid, int w, int h) {
     int i;
     for (i = 0; i < w * h; i++) {
         printf("%d", grid[i]);
         if (i % w == w - 1)
             printf("\n");
     }
+}
+
+/*
+ * Remove pairs of numbers where neither are equal to required
+ * and shift the remaining pairs to the beginning of the array.
+ * Additionally, synchronize sync_index to point to the same pair
+ * (or the one after it if it was removed).
+ */
+void shift_to_beginning(int array[][2],
+                        int len,
+                        int required,
+                        int* sync_index) {
+    int old_index, new_index = 0;
+    for (old_index = 0; old_index < len; old_index++)
+        if (required == array[old_index][0] ||
+            required == array[old_index][1]) {
+            memcpy(array[new_index], array[old_index], sizeof(*array[0]));
+            /* array[new_index][0] = array[old_index][0];
+            array[new_index][1] = array[old_index][1]; */
+            new_index++;
+
+        } else if (*sync_index > new_index)
+            *sync_index -= 1;
+
+    array[new_index][0] = array[new_index][1] = 9;
 }
 
 static char* new_game_desc(const game_params* params,
@@ -252,7 +290,131 @@ static char* new_game_desc(const game_params* params,
     game_state* gs = fill_grid(params->w, params->h);
     printf("%d %d %d\n", gs->ends[0], gs->ends[1], gs->nunvisited);
     print_grid(gs->grid, gs->w, gs->h);
-    sfree(gs);
+
+    /* size=w*h*(28-6+1) */
+    int possible_conns[gs->size][23][2];
+
+    int pos, i, index;
+    for (pos = 0; pos < gs->size; pos++) {
+        index = 0;
+        for (i = 0; i < 23; i++) {
+            if (!gs->grid[pos])
+                continue;
+            int conns[2];
+            memcpy(conns, all_conns[i], 2 * sizeof(int));
+            if ((i < 8 && gs->grid[pos] == 1) ||
+                (i >= 8 && (gs->grid[pos] + conns[0] + conns[1]) % 2 == 1 &&
+                 attempt_move(pos, knight_moves[conns[0]], gs->w, gs->h) !=
+                     -1 &&
+                 attempt_move(pos, knight_moves[conns[1]], gs->w, gs->h) !=
+                     -1)) {
+                memcpy(possible_conns[pos][index++], conns, 2 * sizeof(int));
+            }
+        }
+
+        while (index < 23) {
+            possible_conns[pos][index][0] = 9;
+            possible_conns[pos][index][1] = 9;
+            index++;
+        }
+    }
+
+    int* unique_solution = NULL;
+    int curr_conns[gs->size];
+    memset(curr_conns, 0, gs->size * sizeof(int));
+    pos = 0;
+    /*
+     * - possible_conns: The possible knights moves from a pos
+     *   * first index: which cell
+     *   * second index: which of all_conns (made of two knight_moves)
+     *   * third (0 or 1): the two knight moves
+     * - curr_conns: the current second index of possible_conns.
+     *   They are incremented independently of each other
+     * - pos: which of curr_conns are we incrementing
+     */
+
+    while (pos >= 0) {
+        if (!gs->grid[pos]) {
+            pos++;
+            continue;
+        }
+        int conns[2], conns0[2], conns1[2];
+        memcpy(conns, possible_conns[pos][curr_conns[pos]], 2 * sizeof(int));
+        pair move0 = knight_moves[conns[0]], move1 = knight_moves[conns[1]];
+        int pos0 = pos + move0.y * gs->w + move0.x,
+            pos1 = pos + move1.y * gs->w + move1.x;
+        memcpy(conns0, possible_conns[pos0][curr_conns[pos0]], 2 * sizeof(int));
+        memcpy(conns1, possible_conns[pos1][curr_conns[pos1]], 2 * sizeof(int));
+
+        if ((pos < pos0 || conns[0] == (conns0[0] + 4) % 8 ||
+             conns[0] == (conns0[1] + 4) % 8) &&
+            (pos < pos1 || conns[0] == (conns1[0] + 4) % 8 ||
+             conns[1] == (conns1[1] + 4) % 8 || conns[1] == 8))
+            /* pos makes valid connections, check next pos */
+            pos++;
+        else
+            /* connections not valid, try next pair */
+            curr_conns[pos]++;
+
+        if (pos == gs->size) {
+            /*
+             * All connections are valid (connections go both ways).
+             * Now walk through tour to make sure there are no
+             * unreached cells due to loops.
+             */
+            int i, next_conns[2], cell = gs->ends[0];
+            int conn = possible_conns[cell][curr_conns[cell]][1];
+            for (i = 0; i < gs->ncells; i++) {
+                pair m = knight_moves[conn];
+                cell = gs->grid[m.y * gs->w + m.x];
+                memcpy(next_conns, possible_conns[cell][curr_conns[cell]],
+                       2 * sizeof(int));
+                conn = next_conns[(next_conns[0] + 4) % 8 == conn ? 1 : 0];
+                if (next_conns[0] == 8 || next_conns[1] == 8)
+                    break;
+            }
+
+            /* If there are loops */
+            if (i < gs->ncells - 2) {
+                if (!gs->grid[--pos])
+                    pos--;
+                curr_conns[pos]++;
+            } else if (unique_solution == NULL) {
+                /* Found first solution! */
+                unique_solution = snewn(gs->size, int);
+                memcpy(unique_solution, curr_conns, gs->size * sizeof(int));
+            } else {
+                /* New solution found. Add restrictions to remove differences */
+                int different_conn = -1;
+                for (i = 0; i < gs->size; i++) {
+                    if (unique_solution[i] == curr_conns[i]) {
+                        continue;
+                    } else if (all_conns[unique_solution[i]][0] !=
+                               all_conns[curr_conns[i]][0]) {
+                        different_conn = all_conns[unique_solution[i]][0];
+                    } else {
+                        different_conn = all_conns[unique_solution[i]][1];
+                    }
+                    break;
+                }
+                assert(different_conn > -1);
+                shift_to_beginning(possible_conns[i], gs->size, different_conn,
+                                   &curr_conns[i]);
+                /* TODO: Add to gs or something */
+            }
+        }
+
+        while (possible_conns[pos][curr_conns[pos]][0] == 9) {
+            curr_conns[pos] = 0;
+            curr_conns[--pos]++;
+            if (pos <= 0)
+                break;
+        }
+    }
+
+    assert(unique_solution != NULL);
+    print_grid(unique_solution, gs->w, gs->h);
+    free_game(gs);
     return dupstr("FIXME");
 }
 

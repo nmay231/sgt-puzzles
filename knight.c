@@ -375,8 +375,7 @@ static char* new_game_desc(const game_params* params,
             int i, cell = gs->ends[0];
             int conn = possible_conns[cell * 23 + conns_index[cell]]->b;
             for (i = 0; i < gs->ncells; i++) {
-                point m = knight_moves[conn];
-                cell = gs->grid[m.y * gs->w + m.x];
+                cell = attempt_move(cell, knight_moves[conn], gs->w, gs->h);
                 pair next_conns =
                     *possible_conns[cell * 23 + conns_index[cell]];
                 conn = (next_conns.a + 4) % 8 == conn ? next_conns.b
@@ -390,10 +389,13 @@ static char* new_game_desc(const game_params* params,
                 while (!gs->grid[--pos])
                     ;
                 conns_index[pos]++;
-            } else if (unique_solution == NULL) {
+            } else if (!unique_solution) {
                 /* Found first solution! */
                 unique_solution = snewn(s, int);
                 memcpy(unique_solution, conns_index, s * sizeof(int));
+                while (!gs->grid[--pos])
+                    ;
+                conns_index[pos]++;
             } else {
                 /* New solution found. Add restrictions to remove differences */
                 int different_conn = -1;
@@ -409,9 +411,9 @@ static char* new_game_desc(const game_params* params,
                     break;
                 }
 
-                assert(different_conn > -1);
-                shift_to_beginning(possible_conns[i], s, different_conn,
-                                   &conns_index[i]);
+                if (different_conn > -1)
+                    shift_to_beginning(possible_conns[i], s, different_conn,
+                                       &conns_index[i]);
                 /* TODO: Add to gs or something */
             }
         }

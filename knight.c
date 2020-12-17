@@ -11,10 +11,15 @@
 #define PREFERRED_TILE_SIZE 20
 
 struct pair {
+    int a;
+    int b;
+};
+typedef struct pair pair;
+struct point {
     int x;
     int y;
 };
-typedef struct pair pair;
+typedef struct point point;
 
 /**
  * All of the knight's moves ordered clockwise.
@@ -26,19 +31,20 @@ typedef struct pair pair;
  *
  * Also, knight_moves[8]={0, 0} helps with finding unique solutions.
  */
-static const pair knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
-                                     {1, 2},   {-1, 2},  {-2, 1},
-                                     {-2, -1}, {-1, -2}, {0, 0}};
+static const point knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
+                                      {1, 2},   {-1, 2},  {-2, 1},
+                                      {-2, -1}, {-1, -2}, {0, 0}};
 
 /* (Almost) all combinations of choosing 2 of 9 ints, i.e. 9 choose 2.
  * The values are indexes of knight_moves in and out of the cell.
  * {8, 8} is missing because at least one move must go out of the cell.
  */
-static const int all_conns[36][2] = {
+pair all_conns[36] = {
     {8, 7}, {8, 6}, {8, 5}, {8, 4}, {8, 3}, {8, 2}, {8, 1}, {8, 0}, {7, 6},
     {7, 5}, {6, 5}, {7, 4}, {6, 4}, {5, 4}, {7, 3}, {6, 3}, {5, 3}, {4, 3},
     {7, 2}, {6, 2}, {5, 2}, {4, 2}, {3, 2}, {7, 1}, {6, 1}, {5, 1}, {4, 1},
     {3, 1}, {2, 1}, {7, 0}, {6, 0}, {5, 0}, {4, 0}, {3, 0}, {2, 0}, {1, 0}};
+pair PAIR_DNE = {9, 9};
 
 struct game_params {
     int w;
@@ -133,7 +139,7 @@ static const char* validate_params(const game_params* params, bool full) {
     return NULL;
 }
 
-int attempt_move(int pos, pair move, int w, int h) {
+int attempt_move(int pos, point move, int w, int h) {
     int newx = (pos % w) + move.x;
     int newy = (pos / w) + move.y;
     if (0 <= newx && newx < w && 0 <= newy && newy < h)
@@ -144,7 +150,7 @@ int attempt_move(int pos, pair move, int w, int h) {
 int num_neighbors(int* grid, int pos, int w, int h) {
     int count = 0, i;
     for (i = 0; i < 8; i++) {
-        pair move = knight_moves[i];
+        point move = knight_moves[i];
         int neighbor = attempt_move(pos, move, w, h);
         if (neighbor >= 0 && grid[neighbor] == 9)
             count++;
@@ -240,7 +246,8 @@ generate_grid:
 
         pos = next_pos;
         gs->grid[pos] = 1;
-        gs->moves[gs->ncells - cells_left] = move_i;
+        /* TODO: Memory issue caught by valgrind? */
+        gs->moves[gs->ncells - cells_left - 1] = move_i;
         cells_left--;
     }
 
@@ -264,23 +271,16 @@ void print_grid(int* grid, int w, int h) {
  * Additionally, synchronize sync_index to point to the same pair
  * (or the one after it if it was removed).
  */
-void shift_to_beginning(int array[][2],
-                        int len,
-                        int required,
-                        int* sync_index) {
+void shift_to_beginning(pair* array, int len, int required, int* sync_index) {
     int old_index, new_index = 0;
     for (old_index = 0; old_index < len; old_index++)
-        if (required == array[old_index][0] ||
-            required == array[old_index][1]) {
-            memcpy(array[new_index], array[old_index], sizeof(*array[0]));
-            /* array[new_index][0] = array[old_index][0];
-            array[new_index][1] = array[old_index][1]; */
+        if (required == array[old_index].a || required == array[old_index].b) {
+            array[new_index] = array[old_index];
             new_index++;
 
         } else if (*sync_index > new_index)
             *sync_index -= 1;
-
-    array[new_index][0] = array[new_index][1] = 9;
+    array[new_index] = PAIR_DNE;
 }
 
 static char* new_game_desc(const game_params* params,
@@ -290,128 +290,135 @@ static char* new_game_desc(const game_params* params,
     game_state* gs = fill_grid(params->w, params->h);
     printf("%d %d %d\n", gs->ends[0], gs->ends[1], gs->nunvisited);
     print_grid(gs->grid, gs->w, gs->h);
+    int s = gs->size;
 
     /* size=w*h*(28-6+1) */
-    int possible_conns[gs->size][23][2];
+    pair** possible_conns = snewn(s * 23, pair*);
 
-    int pos, i, index;
-    for (pos = 0; pos < gs->size; pos++) {
-        index = 0;
-        for (i = 0; i < 23; i++) {
+    int pos;
+    for (pos = 0; pos < s; pos++) {
+        int i = 0, index = 0;
+        for (i = 0; i < 36; i++) {
             if (!gs->grid[pos])
-                continue;
-            int conns[2];
-            memcpy(conns, all_conns[i], 2 * sizeof(int));
-            if ((i < 8 && gs->grid[pos] == 1) ||
-                (i >= 8 && (gs->grid[pos] + conns[0] + conns[1]) % 2 == 1 &&
-                 attempt_move(pos, knight_moves[conns[0]], gs->w, gs->h) !=
-                     -1 &&
-                 attempt_move(pos, knight_moves[conns[1]], gs->w, gs->h) !=
-                     -1)) {
-                memcpy(possible_conns[pos][index++], conns, 2 * sizeof(int));
+                break;
+            pair c = all_conns[i];
+            if ((gs->grid[pos] == 1 && i < 8) ||
+                (gs->grid[pos] > 1 && i >= 8 &&
+                 (gs->grid[pos] + c.a + c.b) % 2 == 0)) {
+                int pos1 = attempt_move(pos, knight_moves[c.a], gs->w, gs->h),
+                    pos2 = attempt_move(pos, knight_moves[c.b], gs->w, gs->h);
+                if (pos1 != -1 && pos2 != -1 && gs->grid[pos1] &&
+                    gs->grid[pos2])
+                    possible_conns[pos * 23 + index++] = &(all_conns[i]);
             }
         }
 
-        while (index < 23) {
-            possible_conns[pos][index][0] = 9;
-            possible_conns[pos][index][1] = 9;
-            index++;
-        }
+        while (index < 23)
+            possible_conns[pos * 23 + (index++)] = &PAIR_DNE;
     }
 
     int* unique_solution = NULL;
-    int curr_conns[gs->size];
-    memset(curr_conns, 0, gs->size * sizeof(int));
+    int conns_index[s];
+    /* memset(conns_index, 0, s * sizeof(int)); */
+    int i;
+    for (i = 0; i < s; i++)
+        conns_index[i] = 0;
+
     pos = 0;
     /*
      * - possible_conns: The possible knights moves from a pos
      *   * first index: which cell
      *   * second index: which of all_conns (made of two knight_moves)
      *   * third (0 or 1): the two knight moves
-     * - curr_conns: the current second index of possible_conns.
+     * - conns_index: the current second index of possible_conns.
      *   They are incremented independently of each other
-     * - pos: which of curr_conns are we incrementing
+     * - pos: which of conns_index are we incrementing
      */
 
-    while (pos >= 0) {
-        if (!gs->grid[pos]) {
-            pos++;
-            continue;
-        }
-        int conns[2], conns0[2], conns1[2];
-        memcpy(conns, possible_conns[pos][curr_conns[pos]], 2 * sizeof(int));
-        pair move0 = knight_moves[conns[0]], move1 = knight_moves[conns[1]];
-        int pos0 = pos + move0.y * gs->w + move0.x,
-            pos1 = pos + move1.y * gs->w + move1.x;
-        memcpy(conns0, possible_conns[pos0][curr_conns[pos0]], 2 * sizeof(int));
-        memcpy(conns1, possible_conns[pos1][curr_conns[pos1]], 2 * sizeof(int));
+    while (0 <= pos) {
+        if (pos < s) {
+            if (!gs->grid[pos]) {
+                pos++;
+                continue;
+            }
 
-        if ((pos < pos0 || conns[0] == (conns0[0] + 4) % 8 ||
-             conns[0] == (conns0[1] + 4) % 8) &&
-            (pos < pos1 || conns[0] == (conns1[0] + 4) % 8 ||
-             conns[1] == (conns1[1] + 4) % 8 || conns[1] == 8))
-            /* pos makes valid connections, check next pos */
-            pos++;
-        else
-            /* connections not valid, try next pair */
-            curr_conns[pos]++;
+            while (possible_conns[pos * 23 + conns_index[pos]]->a == 9) {
+                conns_index[pos] = 0;
+                conns_index[--pos]++;
+                if (pos < 0)
+                    goto break_outer_loop;
+            }
 
-        if (pos == gs->size) {
+            pair conns = *possible_conns[pos * 23 + conns_index[pos]];
+            point move0 = knight_moves[conns.a], move1 = knight_moves[conns.b];
+            int pos0 = pos + move0.y * gs->w + move0.x,
+                pos1 = pos + move1.y * gs->w + move1.x;
+
+            pair conns0 = *possible_conns[pos0 * 23 + conns_index[pos0]],
+                 conns1 = *possible_conns[pos1 * 23 + conns_index[pos1]];
+
+            if ((pos < pos0 || conns.a == (conns0.a + 4) % 8 ||
+                 conns.a == (conns0.b + 4) % 8 || conns.a == 8) &&
+                (pos <= pos1 || conns.b == (conns1.a + 4) % 8 ||
+                 conns.b == (conns1.b + 4) % 8))
+                /* pos makes valid connections, validate next pos */
+                pos++;
+            else
+                /* connections not valid, try next conn */
+                conns_index[pos]++;
+        } else {
             /*
-             * All connections are valid (connections go both ways).
-             * Now walk through tour to make sure there are no
+             * All connections have been validated (connections go both
+             * ways). Now walk through the tour to make sure there are no
              * unreached cells due to loops.
              */
-            int i, next_conns[2], cell = gs->ends[0];
-            int conn = possible_conns[cell][curr_conns[cell]][1];
+            int i, cell = gs->ends[0];
+            int conn = possible_conns[cell * 23 + conns_index[cell]]->b;
             for (i = 0; i < gs->ncells; i++) {
-                pair m = knight_moves[conn];
+                point m = knight_moves[conn];
                 cell = gs->grid[m.y * gs->w + m.x];
-                memcpy(next_conns, possible_conns[cell][curr_conns[cell]],
-                       2 * sizeof(int));
-                conn = next_conns[(next_conns[0] + 4) % 8 == conn ? 1 : 0];
-                if (next_conns[0] == 8 || next_conns[1] == 8)
+                pair next_conns =
+                    *possible_conns[cell * 23 + conns_index[cell]];
+                conn = (next_conns.a + 4) % 8 == conn ? next_conns.b
+                                                      : next_conns.a;
+                if (next_conns.a == 8)
                     break;
             }
 
             /* If there are loops */
             if (i < gs->ncells - 2) {
-                if (!gs->grid[--pos])
-                    pos--;
-                curr_conns[pos]++;
+                while (!gs->grid[--pos])
+                    ;
+                conns_index[pos]++;
             } else if (unique_solution == NULL) {
                 /* Found first solution! */
-                unique_solution = snewn(gs->size, int);
-                memcpy(unique_solution, curr_conns, gs->size * sizeof(int));
+                unique_solution = snewn(s, int);
+                memcpy(unique_solution, conns_index, s * sizeof(int));
             } else {
                 /* New solution found. Add restrictions to remove differences */
                 int different_conn = -1;
-                for (i = 0; i < gs->size; i++) {
-                    if (unique_solution[i] == curr_conns[i]) {
+                for (i = 0; i < s; i++) {
+                    if (unique_solution[i] == conns_index[i]) {
                         continue;
-                    } else if (all_conns[unique_solution[i]][0] !=
-                               all_conns[curr_conns[i]][0]) {
-                        different_conn = all_conns[unique_solution[i]][0];
+                    } else if (all_conns[unique_solution[i]].a !=
+                               all_conns[conns_index[i]].a) {
+                        different_conn = all_conns[unique_solution[i]].a;
                     } else {
-                        different_conn = all_conns[unique_solution[i]][1];
+                        different_conn = all_conns[unique_solution[i]].b;
                     }
                     break;
                 }
+
                 assert(different_conn > -1);
-                shift_to_beginning(possible_conns[i], gs->size, different_conn,
-                                   &curr_conns[i]);
+                shift_to_beginning(possible_conns[i], s, different_conn,
+                                   &conns_index[i]);
                 /* TODO: Add to gs or something */
             }
         }
-
-        while (possible_conns[pos][curr_conns[pos]][0] == 9) {
-            curr_conns[pos] = 0;
-            curr_conns[--pos]++;
-            if (pos <= 0)
-                break;
-        }
     }
 
+break_outer_loop:
+    printf("\n");
     assert(unique_solution != NULL);
     print_grid(unique_solution, gs->w, gs->h);
     free_game(gs);

@@ -71,9 +71,7 @@ struct game_state {
      */
     int* grid;
 
-    int* moves;
-
-    random_state* rs;
+    int* pairs;
 };
 
 static game_params* default_params(void) {
@@ -177,7 +175,7 @@ int* unique_random_upto(random_state* rs, int length, int max) {
 static void free_game(game_state* state) {
     if (state) {
         sfree(state->grid);
-        sfree(state->moves);
+        sfree(state->pairs);
         sfree(state);
     }
 }
@@ -189,22 +187,24 @@ struct game_state* fill_grid(int w, int h) {
 
 generate_grid:
     gs = snew(game_state);
-    gs->rs = rs;
     gs->w = w;
     gs->h = h;
     gs->size = w * h;
+    gs->pairs = snewn(2 * gs->size, int);
 
-    gs->nunvisited = random_upto(gs->rs, w + h);
-    gs->ends[0] = random_upto(gs->rs, gs->size);
+    gs->nunvisited = random_upto(rs, w + h);
+    gs->ends[0] = random_upto(rs, gs->size);
     gs->ncells = gs->size - gs->nunvisited;
 
     gs->grid = snewn(w * h, int);
     memset(gs->grid, 0, w * h * sizeof(int));
-    gs->moves = snewn(gs->ncells - 1, int);
+    int* moves = snewn(gs->ncells - 1, int);
 
     int i;
-    for (i = 0; i < gs->ncells - 1; i++)
-        gs->moves[i] = -1;
+    for (i = 0; i < gs->ncells - 1; i++) {
+        moves[i] = -1;
+        gs->pairs[2 * i] = gs->pairs[2 * i + 1] = gs->size;
+    }
 
     gs->grid[gs->ends[0]] = 1;
     int pos = gs->ends[0];
@@ -215,7 +215,7 @@ generate_grid:
     int cells_left = gs->ncells - 1;
 
     while (cells_left > 0) {
-        shuffle(moves_i, 8, sizeof(int), gs->rs);
+        shuffle(moves_i, 8, sizeof(int), rs);
         int min_neigh = 8, next_pos = -1;
         prev_move_i = move_i;
 
@@ -247,7 +247,7 @@ generate_grid:
         pos = next_pos;
         gs->grid[pos] = 1;
         /* TODO: Memory issue caught by valgrind? */
-        gs->moves[gs->ncells - cells_left - 1] = move_i;
+        moves[gs->ncells - cells_left - 1] = move_i;
         cells_left--;
     }
 
@@ -287,7 +287,16 @@ static char* new_game_desc(const game_params* params,
                            random_state* rs,
                            char** aux,
                            bool interactive) {
+    char* string = snewn(1000, char);
     game_state* gs = fill_grid(params->w, params->h);
+    sprintf(string, "%dx%d.", params->w, params->h);
+    char* p = string;
+    while (*p)
+        p++;
+    int i;
+    for (i = 0; i < gs->size; i++)
+        sprintf(p, "%d", gs->grid[i]);
+
     printf("%d %d %d\n", gs->ends[0], gs->ends[1], gs->nunvisited);
     print_grid(gs->grid, gs->w, gs->h);
     int s = gs->size;
@@ -317,10 +326,10 @@ static char* new_game_desc(const game_params* params,
             possible_conns[pos * 23 + (index++)] = &PAIR_DNE;
     }
 
-    int* unique_solution = NULL;
+    pair** unique_solution = NULL;
     int conns_index[s];
     /* memset(conns_index, 0, s * sizeof(int)); */
-    int i;
+    /* int i; */
     for (i = 0; i < s; i++)
         conns_index[i] = 0;
 
@@ -335,14 +344,14 @@ static char* new_game_desc(const game_params* params,
      * - pos: which of conns_index are we incrementing
      */
 
-    while (0 <= pos) {
+    while (1) {
         if (pos < s) {
             if (!gs->grid[pos]) {
                 pos++;
                 continue;
             }
 
-            while (possible_conns[pos * 23 + conns_index[pos]]->a == 9) {
+            while (possible_conns[pos * 23 + conns_index[pos]] == &PAIR_DNE) {
                 conns_index[pos] = 0;
                 conns_index[--pos]++;
                 if (pos < 0)
@@ -391,8 +400,26 @@ static char* new_game_desc(const game_params* params,
                 conns_index[pos]++;
             } else if (!unique_solution) {
                 /* Found first solution! */
-                unique_solution = snewn(s, int);
-                memcpy(unique_solution, conns_index, s * sizeof(int));
+                unique_solution = snewn(s, pair*);
+                int i, index;
+                for (i = 0; i < s; i++) {
+                    unique_solution[i] =
+                        possible_conns[i * 23 + conns_index[i]];
+
+                    point a = knight_moves[unique_solution[i]->a],
+                          b = knight_moves[unique_solution[i]->b];
+                    int left = i + a.y * gs->w + a.x,
+                        right = i + b.y * gs->w + b.x;
+                    if (left < i) {
+                        gs->pairs[2 * index] = left;
+                        gs->pairs[2 * (index++) + 1] = i;
+                    } else if (right < i) {
+                        gs->pairs[2 * index] = i;
+                        gs->pairs[2 * (index++) + 1] = right;
+                    }
+                }
+                break; /* FIXME */
+
                 while (!gs->grid[--pos])
                     ;
                 conns_index[pos]++;
@@ -400,13 +427,13 @@ static char* new_game_desc(const game_params* params,
                 /* New solution found. Add restrictions to remove differences */
                 int different_conn = -1;
                 for (i = 0; i < s; i++) {
-                    if (unique_solution[i] == conns_index[i]) {
+                    pair* conn = possible_conns[i * 23 + conns_index[i]];
+                    if (unique_solution[i] == conn) {
                         continue;
-                    } else if (all_conns[unique_solution[i]].a !=
-                               all_conns[conns_index[i]].a) {
-                        different_conn = all_conns[unique_solution[i]].a;
+                    } else if (unique_solution[i]->a != conn->a) {
+                        different_conn = unique_solution[i]->a;
                     } else {
-                        different_conn = all_conns[unique_solution[i]].b;
+                        different_conn = unique_solution[i]->b;
                     }
                     break;
                 }
@@ -420,9 +447,7 @@ static char* new_game_desc(const game_params* params,
     }
 
 break_outer_loop:
-    printf("\n");
     assert(unique_solution != NULL);
-    print_grid(unique_solution, gs->w, gs->h);
     free_game(gs);
     return dupstr("FIXME");
 }
@@ -431,14 +456,71 @@ static const char* validate_desc(const game_params* params, const char* desc) {
     return NULL;
 }
 
+static game_state* dup_game(const game_state* state);
 static game_state* new_game(midend* me,
                             const game_params* params,
                             const char* desc) {
-    return NULL;
+    char* p = dupstr(desc);
+    game_state* gs = snew(game_state);
+    gs->w = atoi(p);
+    while (*p && isdigit((unsigned char)*p))
+        p++;
+    p++; /* skip "x" */
+    gs->h = atoi(p);
+    while (*p && isdigit((unsigned char)*p))
+        p++;
+    p++; /* skip "." */
+
+    gs->size = gs->w * gs->h;
+    gs->grid = snewn(gs->size, int);
+    gs->ends[0] = gs->ends[1] = -1;
+    gs->nunvisited = 0;
+    int grid = atoi(p), i;
+    for (i = gs->size - 1; i > -1; i++) {
+        gs->grid[i] = grid % 10;
+        if (grid % 10 == 1) {
+            gs->ends[gs->ends > 0] = i;
+        } else if (grid % 10 == 0) {
+            gs->nunvisited++;
+        }
+        grid = grid / 10;
+    }
+    gs->ncells = gs->size - gs->nunvisited;
+    return gs;
+
+    /* game_state* gs = fill_grid(params->w, params->h);
+    gs->npairs = 6;
+    gs->pairs = snewn(2 * gs->npairs, int);
+    int i, pos = 31, next_pos, moves[] = {7, 2, 2, 0, 7, 0};
+    for (i = 0; i < gs->npairs; i++) {
+        point p = knight_moves[moves[i]];
+        next_pos = pos + p.y * params->w + p.x;
+        gs->pairs[2 * i] = pos;
+        gs->pairs[2 * i + 1] = next_pos;
+        pos = next_pos;
+    }
+    gs->pairs[10] = 0;
+    gs->pairs[11] = 35; */
 }
 
 static game_state* dup_game(const game_state* state) {
+    if (!state)
+        return snew(game_state);
     game_state* ret = snew(game_state);
+    ret->w = state->w;
+    ret->h = state->h;
+    ret->size = state->size;
+    ret->ncells = state->ncells;
+    ret->nunvisited = state->nunvisited;
+    ret->ends[0] = state->ends[0];
+    ret->ends[1] = state->ends[1];
+
+    int i;
+    for (i = 0; i < ret->size; i++) {
+        ret->grid[i] = state->grid[i];
+        ret->pairs[2 * i] = state->pairs[2 * i];
+        ret->pairs[2 * i + 1] = state->pairs[2 * i + 1];
+    }
 
     return ret;
 }
@@ -552,8 +634,8 @@ static void game_redraw(drawing* dr,
                         const game_ui* ui,
                         float animtime,
                         float flashtime) {
-    int w = 6, h = 6;
-    /* int w = state->w, h = state->h; */
+    /* int w = 6, h = 6; */
+    int w = state->w, h = state->h;
 
     draw_rect(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
               h * ds->tilesize + 2 * BORDER, COL_BACKGROUND);
@@ -564,6 +646,32 @@ static void game_redraw(drawing* dr,
     }
     for (y = BORDER; y <= h * ds->tilesize + BORDER; y += ds->tilesize) {
         draw_line(dr, BORDER, y, BORDER + w * ds->tilesize, y, COL_OUTLINE);
+    }
+
+    int i;
+    for (i = 0; i < state->size; i++)
+        if (!state->grid[i]) {
+            int x = i % w, y = i / w;
+            draw_rect(dr, BORDER + x * ds->tilesize, BORDER + y * ds->tilesize,
+                      ds->tilesize, ds->tilesize, COL_OUTLINE);
+        } else if (state->grid[i] == 2) {
+            int x = i % w, y = i / w;
+            draw_rect(dr, BORDER + (x + 0.4) * ds->tilesize,
+                      BORDER + (y + 0.4) * ds->tilesize, ds->tilesize * 0.2,
+                      ds->tilesize * 0.2, COL_OUTLINE);
+        }
+
+    for (i = 0; i < state->size; i++) {
+        int a = state->pairs[i * 2], b = state->pairs[i * 2 + 1];
+        if (a > state->size || b > state->size)
+            continue;
+        int ax = (a % w + 0.5) * ds->tilesize + BORDER,
+            ay = (a / w + 0.5) * ds->tilesize + BORDER,
+            bx = (b % w + 0.5) * ds->tilesize + BORDER,
+            by = (b / w + 0.5) * ds->tilesize + BORDER;
+        draw_line(dr, ax, ay, bx, by, COL_PATH);
+        draw_circle(dr, ax, ay, 2, COL_PATH, COL_PATH);
+        draw_circle(dr, bx, by, 2, COL_PATH, COL_PATH);
     }
 
     draw_update(dr, 0, 0, w * ds->tilesize + 2 * BORDER,

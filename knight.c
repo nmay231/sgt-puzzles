@@ -56,14 +56,13 @@ struct game_params {
 static const struct game_params knight_presets[] = {{6, 6}, {7, 7}};
 
 struct game_state {
-    int w, h, size; /* width, height, size = w * h */
+    int w, h;       /* width, height */
     int nunvisited; /* Number of cells not visited in the tour */
     int ncells;     /* ncells = w * h - nunvisited */
-    int ends[2];    /* start and ending cells of tour */
+    int ends[2];    /* Start and ending cells of tour */
 
-    /**
+    /*
      * A WxH array with values:
-     *    9. Initialization value (means nothing)
      *    0. Unvisited cell
      *    1. An endpoint, there are only two in the grid
      *    2. A cell where an orthogonal turn was made
@@ -71,7 +70,11 @@ struct game_state {
      */
     int* grid;
 
-    int* pairs;
+    /*
+     * Pairs of connections, where cell i uses indexes 2*i and 2*i+1, in the
+     * range '0'-'8'. '8' means connection is unused.
+     */
+    char* conn_pairs;
 };
 
 static game_params* default_params(void) {
@@ -156,104 +159,27 @@ int num_neighbors(int* grid, int pos, int w, int h) {
     return count;
 }
 
-int* unique_random_upto(random_state* rs, int length, int max) {
-    int* arr = snewn(length, int);
-
-    int i, j;
-    for (i = 0; i < length; i++) {
-        arr[i] = random_upto(rs, max);
-        for (j = 0; j < i; j++)
-            if (arr[i] == arr[j]) {
-                i--;
-                break;
-            }
-    }
-
-    return arr;
+game_state* init_game_state(int w, int h) {
+    game_state* gs = snew(game_state);
+    gs->w = w;
+    gs->h = h;
+    gs->ends[0] = gs->ends[1] = gs->nunvisited = -1;
+    gs->ncells = w * h;
+    gs->grid = snewn(w * h, int);
+    /* FIXME: should I convert gs->grid to be a string? */
+    memset(gs->grid, 0, w * h * sizeof(int));
+    /* length could be 2*w*h-2, but whatever */
+    gs->conn_pairs = snewn(2 * w * h, char);
+    memset(gs->conn_pairs, '8', 2 * w * h * sizeof(char));
+    return gs;
 }
 
 static void free_game(game_state* state) {
     if (state) {
         sfree(state->grid);
-        sfree(state->pairs);
+        sfree(state->conn_pairs);
         sfree(state);
     }
-}
-
-struct game_state* fill_grid(int w, int h) {
-    assert(w > 5 && h > 5);
-    struct game_state* gs;
-    random_state* rs = random_new("123456", 6);
-
-generate_grid:
-    gs = snew(game_state);
-    gs->w = w;
-    gs->h = h;
-    gs->size = w * h;
-    gs->pairs = snewn(2 * gs->size, int);
-
-    gs->nunvisited = random_upto(rs, w + h);
-    gs->ends[0] = random_upto(rs, gs->size);
-    gs->ncells = gs->size - gs->nunvisited;
-
-    gs->grid = snewn(w * h, int);
-    memset(gs->grid, 0, w * h * sizeof(int));
-    int* moves = snewn(gs->ncells - 1, int);
-
-    int i;
-    for (i = 0; i < gs->ncells - 1; i++) {
-        moves[i] = -1;
-        gs->pairs[2 * i] = gs->pairs[2 * i + 1] = gs->size;
-    }
-
-    gs->grid[gs->ends[0]] = 1;
-    int pos = gs->ends[0];
-
-    int moves_i[8] = {0, 1, 2, 3, 4, 5, 6, 7};
-    int move_i = -1, prev_move_i;
-
-    int cells_left = gs->ncells - 1;
-
-    while (cells_left > 0) {
-        shuffle(moves_i, 8, sizeof(int), rs);
-        int min_neigh = 8, next_pos = -1;
-        prev_move_i = move_i;
-
-        int i;
-        for (i = 0; i < 8; i++) {
-            int tmp = attempt_move(pos, knight_moves[moves_i[i]], gs->w, gs->h);
-
-            if (tmp >= 0 && !gs->grid[tmp]) {
-                int num = num_neighbors(gs->grid, tmp, gs->w, gs->h);
-
-                if (num < min_neigh) {
-                    min_neigh = num;
-                    next_pos = tmp;
-                    move_i = moves_i[i];
-                }
-            }
-        }
-
-        if (next_pos == -1) {
-            /* Warnsdorff heuristic failed, just restart */
-            free_game(gs);
-            goto generate_grid;
-        }
-
-        if (prev_move_i != -1)
-            /* 2=orthogonal turns, 3=non-orthogonal turns */
-            gs->grid[pos] = (prev_move_i + move_i) % 2 + 2;
-
-        pos = next_pos;
-        gs->grid[pos] = 1;
-        /* TODO: Memory issue caught by valgrind? */
-        moves[gs->ncells - cells_left - 1] = move_i;
-        cells_left--;
-    }
-
-    gs->ends[1] = pos;
-
-    return gs;
 }
 
 void print_grid(int* grid, int w, int h) {
@@ -284,223 +210,108 @@ void shift_to_beginning(pair* array, int len, int required, int* sync_index) {
 }
 
 static char* new_game_desc(const game_params* params,
-                           random_state* rs,
+                           random_state* old_rs,
                            char** aux,
                            bool interactive) {
-    char* string = snewn(1000, char);
-    game_state* gs = fill_grid(params->w, params->h);
-    sprintf(string, "%dx%d.", params->w, params->h);
-    char* p = string;
-    while (*p)
-        p++;
+    int w = params->w, h = params->h;
+    assert(w > 5 && h > 5);
+    struct game_state* gs;
+    printf("%li", random_upto(old_rs, 10)); /* Dispose of old rs */
+    random_state* rs = random_new("123456", 6);
+
+generate_grid:
+    gs = init_game_state(w, h);
+    gs->nunvisited = random_upto(rs, w + h);
+    gs->ends[0] = random_upto(rs, w * h);
+    gs->ncells = w * h - gs->nunvisited;
+
+    int* moves = snewn(gs->ncells - 1, int);
+
     int i;
-    for (i = 0; i < gs->size; i++)
-        sprintf(p, "%d", gs->grid[i]);
+    for (i = 0; i < gs->ncells - 1; i++)
+        moves[i] = -1;
 
-    printf("%d %d %d\n", gs->ends[0], gs->ends[1], gs->nunvisited);
-    print_grid(gs->grid, gs->w, gs->h);
-    int s = gs->size;
+    int pos = gs->ends[0];
+    gs->grid[pos] = 1;
 
-    /* size=w*h*(28-6+1) */
-    pair** possible_conns = snewn(s * 23, pair*);
+    int moves_i[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    int move_i = -1, prev_move_i;
 
-    int pos;
-    for (pos = 0; pos < s; pos++) {
-        int i = 0, index = 0;
-        for (i = 0; i < 36; i++) {
-            if (!gs->grid[pos])
-                break;
-            pair c = all_conns[i];
-            if ((gs->grid[pos] == 1 && i < 8) ||
-                (gs->grid[pos] > 1 && i >= 8 &&
-                 (gs->grid[pos] + c.a + c.b) % 2 == 0)) {
-                int pos1 = attempt_move(pos, knight_moves[c.a], gs->w, gs->h),
-                    pos2 = attempt_move(pos, knight_moves[c.b], gs->w, gs->h);
-                if (pos1 != -1 && pos2 != -1 && gs->grid[pos1] &&
-                    gs->grid[pos2])
-                    possible_conns[pos * 23 + index++] = &(all_conns[i]);
+    int cells_left;
+    for (cells_left = gs->ncells - 1; cells_left > 0; cells_left--) {
+        /* Shuffle moves to remove bias when multiple moves are possible */
+        shuffle(moves_i, 8, sizeof(int), rs);
+        int min_neigh = 8, next_pos = -1;
+        prev_move_i = move_i;
+
+        int i;
+        for (i = 0; i < 8; i++) {
+            int neighbor =
+                attempt_move(pos, knight_moves[moves_i[i]], gs->w, gs->h);
+
+            if (neighbor >= 0 && !gs->grid[neighbor]) {
+                int num = num_neighbors(gs->grid, neighbor, gs->w, gs->h);
+
+                if (num < min_neigh) {
+                    min_neigh = num;
+                    next_pos = neighbor;
+                    move_i = moves_i[i];
+                }
             }
         }
 
-        while (index < 23)
-            possible_conns[pos * 23 + (index++)] = &PAIR_DNE;
-    }
-
-    pair** unique_solution = NULL;
-    int conns_index[s];
-    /* memset(conns_index, 0, s * sizeof(int)); */
-    /* int i; */
-    for (i = 0; i < s; i++)
-        conns_index[i] = 0;
-
-    pos = 0;
-    /*
-     * - possible_conns: The possible knights moves from a pos
-     *   * first index: which cell
-     *   * second index: which of all_conns (made of two knight_moves)
-     *   * third (0 or 1): the two knight moves
-     * - conns_index: the current second index of possible_conns.
-     *   They are incremented independently of each other
-     * - pos: which of conns_index are we incrementing
-     */
-
-    while (1) {
-        if (pos < s) {
-            if (!gs->grid[pos]) {
-                pos++;
-                continue;
-            }
-
-            while (possible_conns[pos * 23 + conns_index[pos]] == &PAIR_DNE) {
-                conns_index[pos] = 0;
-                conns_index[--pos]++;
-                if (pos < 0)
-                    goto break_outer_loop;
-            }
-
-            pair conns = *possible_conns[pos * 23 + conns_index[pos]];
-            point move0 = knight_moves[conns.a], move1 = knight_moves[conns.b];
-            int pos0 = pos + move0.y * gs->w + move0.x,
-                pos1 = pos + move1.y * gs->w + move1.x;
-
-            pair conns0 = *possible_conns[pos0 * 23 + conns_index[pos0]],
-                 conns1 = *possible_conns[pos1 * 23 + conns_index[pos1]];
-
-            if ((pos < pos0 || conns.a == (conns0.a + 4) % 8 ||
-                 conns.a == (conns0.b + 4) % 8 || conns.a == 8) &&
-                (pos <= pos1 || conns.b == (conns1.a + 4) % 8 ||
-                 conns.b == (conns1.b + 4) % 8))
-                /* pos makes valid connections, validate next pos */
-                pos++;
-            else
-                /* connections not valid, try next conn */
-                conns_index[pos]++;
-        } else {
-            /*
-             * All connections have been validated (connections go both
-             * ways). Now walk through the tour to make sure there are no
-             * unreached cells due to loops.
-             */
-            int i, cell = gs->ends[0];
-            int conn = possible_conns[cell * 23 + conns_index[cell]]->b;
-            for (i = 0; i < gs->ncells; i++) {
-                cell = attempt_move(cell, knight_moves[conn], gs->w, gs->h);
-                pair next_conns =
-                    *possible_conns[cell * 23 + conns_index[cell]];
-                conn = (next_conns.a + 4) % 8 == conn ? next_conns.b
-                                                      : next_conns.a;
-                if (next_conns.a == 8)
-                    break;
-            }
-
-            /* If there are loops */
-            if (i < gs->ncells - 2) {
-                while (!gs->grid[--pos])
-                    ;
-                conns_index[pos]++;
-            } else if (!unique_solution) {
-                /* Found first solution! */
-                unique_solution = snewn(s, pair*);
-                int i, index;
-                for (i = 0; i < s; i++) {
-                    unique_solution[i] =
-                        possible_conns[i * 23 + conns_index[i]];
-
-                    point a = knight_moves[unique_solution[i]->a],
-                          b = knight_moves[unique_solution[i]->b];
-                    int left = i + a.y * gs->w + a.x,
-                        right = i + b.y * gs->w + b.x;
-                    if (left < i) {
-                        gs->pairs[2 * index] = left;
-                        gs->pairs[2 * (index++) + 1] = i;
-                    } else if (right < i) {
-                        gs->pairs[2 * index] = i;
-                        gs->pairs[2 * (index++) + 1] = right;
-                    }
-                }
-                break; /* FIXME */
-
-                while (!gs->grid[--pos])
-                    ;
-                conns_index[pos]++;
-            } else {
-                /* New solution found. Add restrictions to remove differences */
-                int different_conn = -1;
-                for (i = 0; i < s; i++) {
-                    pair* conn = possible_conns[i * 23 + conns_index[i]];
-                    if (unique_solution[i] == conn) {
-                        continue;
-                    } else if (unique_solution[i]->a != conn->a) {
-                        different_conn = unique_solution[i]->a;
-                    } else {
-                        different_conn = unique_solution[i]->b;
-                    }
-                    break;
-                }
-
-                if (different_conn > -1)
-                    shift_to_beginning(possible_conns[i], s, different_conn,
-                                       &conns_index[i]);
-                /* TODO: Add to gs or something */
-            }
+        if (next_pos == -1) {
+            /* Warnsdorff heuristic failed or a tour is impossible, restart */
+            free_game(gs);
+            goto generate_grid;
         }
+
+        if (prev_move_i != -1)
+            /* 2=orthogonal turns, 3=non-orthogonal turns */
+            gs->grid[pos] = (prev_move_i + move_i) % 2 + 2;
+
+        pos = next_pos;
+        gs->grid[pos] = 1;
+        /* FIXME: Memory issue caught by valgrind? */
+        moves[gs->ncells - cells_left - 1] = move_i;
     }
 
-break_outer_loop:
-    assert(unique_solution != NULL);
+    gs->ends[1] = pos;
+
+    /* ==== Convert to string ==== */
+    char *string = snewn(w * h + 1, char), *p = string;
+    for (i = 0; i < w * h; i++)
+        sprintf(p++, "%d", gs->grid[i]);
+    *p = '\0';
     free_game(gs);
-    return dupstr("FIXME");
+    return string;
 }
 
 static const char* validate_desc(const game_params* params, const char* desc) {
     return NULL;
 }
 
-static game_state* dup_game(const game_state* state);
 static game_state* new_game(midend* me,
                             const game_params* params,
                             const char* desc) {
-    char* p = dupstr(desc);
-    game_state* gs = snew(game_state);
-    gs->w = atoi(p);
-    while (*p && isdigit((unsigned char)*p))
-        p++;
-    p++; /* skip "x" */
-    gs->h = atoi(p);
-    while (*p && isdigit((unsigned char)*p))
-        p++;
-    p++; /* skip "." */
+    int w = params->w, h = params->h;
+    game_state* gs = init_game_state(w, h);
 
-    gs->size = gs->w * gs->h;
-    gs->grid = snewn(gs->size, int);
-    gs->ends[0] = gs->ends[1] = -1;
-    gs->nunvisited = 0;
-    int grid = atoi(p), i;
-    for (i = gs->size - 1; i > -1; i++) {
-        gs->grid[i] = grid % 10;
-        if (grid % 10 == 1) {
-            gs->ends[gs->ends > 0] = i;
-        } else if (grid % 10 == 0) {
+    int i, grid = atoi(desc);
+    printf("'%s'\n", desc);
+    for (i = 0; i < w * h; i++) {
+        int c = desc[i] - '0';
+        gs->grid[i] = c;
+        if (c == 1) {
+            gs->ends[gs->ends > 0 ? 1 : 0] = i;
+        } else if (c == 0) {
             gs->nunvisited++;
         }
         grid = grid / 10;
     }
-    gs->ncells = gs->size - gs->nunvisited;
+    print_grid(gs->grid, w, h);
+    gs->ncells = w * h - gs->nunvisited;
     return gs;
-
-    /* game_state* gs = fill_grid(params->w, params->h);
-    gs->npairs = 6;
-    gs->pairs = snewn(2 * gs->npairs, int);
-    int i, pos = 31, next_pos, moves[] = {7, 2, 2, 0, 7, 0};
-    for (i = 0; i < gs->npairs; i++) {
-        point p = knight_moves[moves[i]];
-        next_pos = pos + p.y * params->w + p.x;
-        gs->pairs[2 * i] = pos;
-        gs->pairs[2 * i + 1] = next_pos;
-        pos = next_pos;
-    }
-    gs->pairs[10] = 0;
-    gs->pairs[11] = 35; */
 }
 
 static game_state* dup_game(const game_state* state) {
@@ -509,17 +320,16 @@ static game_state* dup_game(const game_state* state) {
     game_state* ret = snew(game_state);
     ret->w = state->w;
     ret->h = state->h;
-    ret->size = state->size;
     ret->ncells = state->ncells;
     ret->nunvisited = state->nunvisited;
     ret->ends[0] = state->ends[0];
     ret->ends[1] = state->ends[1];
 
     int i;
-    for (i = 0; i < ret->size; i++) {
+    for (i = 0; i < ret->w * ret->h; i++) {
         ret->grid[i] = state->grid[i];
-        ret->pairs[2 * i] = state->pairs[2 * i];
-        ret->pairs[2 * i + 1] = state->pairs[2 * i + 1];
+        ret->conn_pairs[2 * i] = state->conn_pairs[2 * i];
+        ret->conn_pairs[2 * i + 1] = state->conn_pairs[2 * i + 1];
     }
 
     return ret;
@@ -574,9 +384,7 @@ static game_state* execute_move(const game_state* state, const char* move) {
     return NULL;
 }
 
-/* ----------------------------------------------------------------------
- * Drawing routines.
- */
+/* ================ Drawing routines ================ */
 
 enum { COL_BACKGROUND, COL_OUTLINE, COL_PATH, NCOLOURS };
 
@@ -634,7 +442,6 @@ static void game_redraw(drawing* dr,
                         const game_ui* ui,
                         float animtime,
                         float flashtime) {
-    /* int w = 6, h = 6; */
     int w = state->w, h = state->h;
 
     draw_rect(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
@@ -649,7 +456,7 @@ static void game_redraw(drawing* dr,
     }
 
     int i;
-    for (i = 0; i < state->size; i++)
+    for (i = 0; i < w * h; i++)
         if (!state->grid[i]) {
             int x = i % w, y = i / w;
             draw_rect(dr, BORDER + x * ds->tilesize, BORDER + y * ds->tilesize,
@@ -661,17 +468,22 @@ static void game_redraw(drawing* dr,
                       ds->tilesize * 0.2, COL_OUTLINE);
         }
 
-    for (i = 0; i < state->size; i++) {
-        int a = state->pairs[i * 2], b = state->pairs[i * 2 + 1];
-        if (a > state->size || b > state->size)
-            continue;
-        int ax = (a % w + 0.5) * ds->tilesize + BORDER,
-            ay = (a / w + 0.5) * ds->tilesize + BORDER,
-            bx = (b % w + 0.5) * ds->tilesize + BORDER,
-            by = (b / w + 0.5) * ds->tilesize + BORDER;
-        draw_line(dr, ax, ay, bx, by, COL_PATH);
-        draw_circle(dr, ax, ay, 2, COL_PATH, COL_PATH);
-        draw_circle(dr, bx, by, 2, COL_PATH, COL_PATH);
+    for (i = 0; i < 2 * w * h; i++) {
+        char c = state->conn_pairs[i];
+        if (c != '8') {
+            point move = knight_moves[c - '0'];
+            int a = i / 2, b = a + move.y * w + move.x;
+            if (b > a)
+                /* Only draw lines once */
+                continue;
+            int ax = (a % w + 0.5) * ds->tilesize + BORDER,
+                ay = (a / w + 0.5) * ds->tilesize + BORDER,
+                bx = (b % w + 0.5) * ds->tilesize + BORDER,
+                by = (b / w + 0.5) * ds->tilesize + BORDER;
+            draw_line(dr, ax, ay, bx, by, COL_PATH);
+            if (i % 2 == 0 && state->conn_pairs[i + 1] != '8')
+                draw_circle(dr, ax, ay, 2, COL_PATH, COL_PATH);
+        }
     }
 
     draw_update(dr, 0, 0, w * ds->tilesize + 2 * BORDER,

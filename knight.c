@@ -78,6 +78,9 @@ struct game_state {
 
     /* Flags for if a conn_pairs was included in the puzzle hints */
     bool* start_pairs;
+
+    /* The ending cursor position after the last move. Used to update game_ui */
+    int cx, cy;
 };
 
 static game_params* default_params(void) {
@@ -166,7 +169,7 @@ game_state* init_game_state(int w, int h) {
     game_state* gs = snew(game_state);
     gs->w = w;
     gs->h = h;
-    gs->ends[0] = gs->ends[1] = gs->nunvisited = -1;
+    gs->ends[0] = gs->ends[1] = gs->nunvisited = gs->cx = gs->cy = -1;
     gs->ncells = w * h;
     /* FIXME: should I convert gs->grid to be a string? */
     gs->grid = snewn(w * h, int);
@@ -191,15 +194,6 @@ static void free_game(game_state* state) {
     }
 }
 
-void print_grid(int* grid, int w, int h) {
-    int i;
-    for (i = 0; i < w * h; i++) {
-        printf("%d", grid[i]);
-        if (i % w == w - 1)
-            printf("\n");
-    }
-}
-
 /*
  * Remove pairs of numbers where neither are equal to required
  * and shift the remaining pairs to the beginning of the array.
@@ -218,13 +212,9 @@ void shift_to_beginning(pair* array, int len, int required, int* sync_index) {
     array[new_index] = PAIR_DNE;
 }
 
-static char* solve_game(const game_state* state,
-                        const game_state* currstate,
-                        const char* aux,
-                        const char** error);
-static game_state* execute_move(const game_state* state, const char* move);
-
-/* Modify gs in place to  */
+/* Modify gs in-place to give a unique solution. guaranteed is whether a
+ * solution is guaranteed to exist, i.e. did we generate the puzzle or was it
+ * user input. */
 void unique_solution(game_state* gs, bool guaranteed) {}
 
 static char* new_game_desc(const game_params* params,
@@ -323,7 +313,6 @@ static game_state* new_game(midend* me,
     game_state* gs = init_game_state(w, h);
 
     int i, grid = atoi(desc);
-    printf("'%s'\n", desc);
     for (i = 0; i < w * h; i++) {
         int c = desc[i] - '0';
         gs->grid[i] = c;
@@ -334,7 +323,6 @@ static game_state* new_game(midend* me,
         }
         grid = grid / 10;
     }
-    print_grid(gs->grid, w, h);
     gs->ncells = w * h - gs->nunvisited;
     return gs;
 }
@@ -379,13 +367,15 @@ static char* game_text_format(const game_state* state) {
 
 struct game_ui {
     int cx, cy;
-    bool selected;
+    bool visible;
+    bool show_dests; /* show destinations */
 };
 
 static game_ui* new_ui(const game_state* state) {
     game_ui* ui = snew(game_ui);
     ui->cx = ui->cy = 0;
-    ui->selected = false;
+    ui->visible = false;
+    ui->show_dests = true;
     return ui;
 }
 
@@ -402,7 +392,13 @@ static void decode_ui(game_ui* ui, const char* encoding) {}
 static void game_changed_state(game_ui* ui,
                                const game_state* oldstate,
                                const game_state* newstate) {
-    ui->selected = false;
+    if (newstate->cx == -1 || newstate->cy == -1)
+        ui->visible = false;
+    else {
+        ui->visible = true;
+        ui->cx = newstate->cx;
+        ui->cy = newstate->cy;
+    }
 }
 
 struct game_drawstate {
@@ -420,36 +416,41 @@ static char* interpret_move(const game_state* state,
     x = (x - BORDER) / ds->tilesize;
     y = (y - BORDER) / ds->tilesize;
 
-    if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
-        return NULL;
+    button = button & ~MOD_MASK;
 
-    if (!ui->selected) {
-        ui->selected = true;
-        ui->cx = x;
-        ui->cy = y;
-        return UI_UPDATE;
-    }
+    if (button == LEFT_RELEASE) {
+        if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
+            return NULL;
 
-    /* Not a knights move away, change position instead of moving */
-    int dx = x - ui->cx, dy = y - ui->cy;
-    if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
-        ui->cx = x;
-        ui->cy = y;
-        return UI_UPDATE;
-    }
+        if (!ui->visible) {
+            ui->visible = true;
+            ui->cx = x;
+            ui->cy = y;
+            return UI_UPDATE;
+        }
 
-    int pos = y * w + x;
-    char offsetx = state->conn_pairs[pos * 2],
-         offsety = state->conn_pairs[pos * 2 + 1];
-    if (state->grid[pos] &&
-        ((offsetx == '8' && offsety == '8') ||
-         ((offsetx == '8' || offsety == '8') &&
-          (state->grid[pos] + offsetx + offsety) % 2 == 0))) {
-        char* buffer = snewn(15, char);
-        sprintf(buffer, "%d%d%d", dx + 2, dy + 2, ui->cy * w + ui->cx);
-        ui->cx = x;
-        ui->cy = y;
-        return buffer;
+        if (ui->cx == x && ui->cy == y) {
+            ui->visible = false;
+            return UI_UPDATE;
+        }
+
+        /* Not a knights move away, change position instead of moving */
+        int dx = x - ui->cx, dy = y - ui->cy;
+        if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
+            ui->cx = x;
+            ui->cy = y;
+            return UI_UPDATE;
+        }
+
+        int pos = y * w + x;
+        char* conns = state->conn_pairs + pos * 2;
+        if (state->grid[pos] && (conns[0] == '8' || conns[1] == '8')) {
+            char* buffer = snewn(15, char);
+            sprintf(buffer, "%d%d%d", dx + 2, dy + 2, ui->cy * w + ui->cx);
+            ui->cx = x;
+            ui->cy = y;
+            return buffer;
+        }
     }
 
     return NULL;
@@ -465,15 +466,17 @@ static game_state* execute_move(const game_state* state, const char* move) {
         return NULL;
     }
 
-    /* This ugly formula turns {dx, dy} of knight_moves[i] into the index i */
+    /* This ugly formula finds the index i of {dx, dy} in knight_moves */
     int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
-    gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] == '8')] = i + '0';
-    pos += dy * gs->w + dx;
-    i = (i + 4) % 8;
-    if (gs->conn_pairs[2 * pos] < '8' && gs->conn_pairs[2 * pos + 1] < '8')
-        return gs;
     gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] < '8')] = i + '0';
+    pos = pos + dy * gs->w + dx;
+    i = (i + 4) % 8;
+    if (gs->conn_pairs[2 * pos] == '8' || gs->conn_pairs[2 * pos + 1] == '8')
+        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] < '8')] = i + '0';
+
+    gs->cx = pos % gs->w;
+    gs->cy = pos / gs->w;
 
     return gs;
 }
@@ -581,7 +584,7 @@ static void game_redraw(drawing* dr,
         }
 
     /* Cursor and Available moves */
-    if (ui->selected) {
+    if (ui->visible) {
         draw_rect(dr, BORDER + ui->cx * ds->tilesize + 1,
                   BORDER + ui->cy * ds->tilesize + 1, ds->tilesize - 1,
                   ds->tilesize - 1, COL_SELECTED);
@@ -621,7 +624,7 @@ static void game_redraw(drawing* dr,
 
             if (i % 2 == 0 && state->conn_pairs[i] < '8' &&
                 state->conn_pairs[i + 1] < '8')
-                draw_circle(dr, ax, ay, 10, COL_PATH, COL_PATH);
+                draw_circle(dr, ax, ay, 0.1 * ds->tilesize, COL_PATH, COL_PATH);
         }
     }
 

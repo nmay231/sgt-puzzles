@@ -368,14 +368,19 @@ static char* game_text_format(const game_state* state) {
 struct game_ui {
     int cx, cy;
     bool visible;
-    bool show_dests; /* show destinations */
+
+    /* 0=don't show destinations, 1,2,3=show destinations. Using 2 and 3
+     * disambiguates the first move of a cell when using arrow key controls
+     * while 1 shows all. With 2 or 3, the moves shown are slanted left or right
+     * from the main axis. */
+    int show_dests;
 };
 
 static game_ui* new_ui(const game_state* state) {
     game_ui* ui = snew(game_ui);
     ui->cx = ui->cy = 0;
     ui->visible = false;
-    ui->show_dests = true;
+    ui->show_dests = 0;
     return ui;
 }
 
@@ -392,9 +397,7 @@ static void decode_ui(game_ui* ui, const char* encoding) {}
 static void game_changed_state(game_ui* ui,
                                const game_state* oldstate,
                                const game_state* newstate) {
-    if (newstate->cx == -1 || newstate->cy == -1)
-        ui->visible = false;
-    else {
+    if (0 <= newstate->cx && 0 <= newstate->cy) {
         ui->visible = true;
         ui->cx = newstate->cx;
         ui->cy = newstate->cy;
@@ -416,7 +419,20 @@ static char* interpret_move(const game_state* state,
     x = (x - BORDER) / ds->tilesize;
     y = (y - BORDER) / ds->tilesize;
 
+    int cur_pos = ui->cy * w + ui->cx;
+    int new_pos = y * w + x;
+    char* cur_conns = state->conn_pairs + 2 * cur_pos;
+    char* new_conns = state->conn_pairs + 2 * new_pos;
+
     button = button & ~MOD_MASK;
+    if (button == 'w' || button == 'W')
+        button = CURSOR_UP;
+    else if (button == 'd' || button == 'D')
+        button = CURSOR_RIGHT;
+    else if (button == 's' || button == 'S')
+        button = CURSOR_DOWN;
+    else if (button == 'a' || button == 'A')
+        button = CURSOR_LEFT;
 
     if (button == LEFT_RELEASE) {
         if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
@@ -424,6 +440,7 @@ static char* interpret_move(const game_state* state,
 
         if (!ui->visible) {
             ui->visible = true;
+            ui->show_dests = 1;
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;
@@ -434,26 +451,94 @@ static char* interpret_move(const game_state* state,
             return UI_UPDATE;
         }
 
-        /* Not a knights move away, change position instead of moving */
         int dx = x - ui->cx, dy = y - ui->cy;
+        /* Not a knights move away, change position instead of making a move */
         if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;
         }
 
-        int pos = y * w + x;
-        char* conns = state->conn_pairs + pos * 2;
-        if (state->grid[pos] && (conns[0] == '8' || conns[1] == '8')) {
+        if (state->grid[new_pos] &&
+            (new_conns[0] == '8' || new_conns[1] == '8')) {
             char* buffer = snewn(15, char);
             sprintf(buffer, "%d%d%d", dx + 2, dy + 2, ui->cy * w + ui->cx);
             ui->cx = x;
             ui->cy = y;
             return buffer;
         }
+
+        return NULL;
     }
 
-    return NULL;
+    if (!ui->visible && (button == CURSOR_UP || button == CURSOR_DOWN ||
+                         button == CURSOR_LEFT || button == CURSOR_RIGHT ||
+                         button == CURSOR_SELECT || button == CURSOR_SELECT2)) {
+        ui->visible = true;
+        ui->show_dests = 0;
+        return UI_UPDATE;
+    } else if (!ui->show_dests) {
+        if (button == CURSOR_UP && ui->cy > 0) {
+            ui->cy--;
+        } else if (button == CURSOR_DOWN && ui->cy < state->h - 1) {
+            ui->cy++;
+        } else if (button == CURSOR_LEFT && ui->cx > 0) {
+            ui->cx--;
+        } else if (button == CURSOR_RIGHT && ui->cx < state->w - 1) {
+            ui->cx++;
+        } else if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
+            ui->show_dests = 2;
+        } else {
+            return NULL;
+        }
+        return UI_UPDATE;
+    } else if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
+        if (cur_conns[0] == '8' && cur_conns[1] == '8') {
+            if (ui->show_dests == 0)
+                ui->show_dests++;
+            ui->show_dests = (ui->show_dests + 1) % 4;
+        } else
+            ui->show_dests = (ui->show_dests ? 0 : 2);
+        return UI_UPDATE;
+    } else if (ui->show_dests == 1 && state->conn_pairs[2 * new_pos] == '8' &&
+               state->conn_pairs[2 * new_pos + 1] == '8') {
+        ui->show_dests = 2;
+        return UI_UPDATE;
+    }
+
+    int which = 9;
+    if (cur_conns[0] == '8' && cur_conns[1] == '8')
+        which -= ui->show_dests % 2;
+    else
+        which -= (cur_conns[0] + cur_conns[1] + state->grid[cur_pos]) % 2;
+
+    if (button == CURSOR_UP) {
+        which = (which - 1) % 8;
+    } else if (button == CURSOR_RIGHT) {
+        which -= 7;
+    } else if (button == CURSOR_DOWN) {
+        which -= 5;
+    } else if (button == CURSOR_LEFT) {
+        which -= 3;
+    } else {
+        return NULL;
+    }
+
+    point move = knight_moves[which];
+    int neighbor = attempt_move(cur_pos, move, w, h);
+    if (neighbor == -1 || !state->grid[neighbor])
+        return NULL;
+
+    /* If the move goes backwards, undo instead of walking over it twice */
+    /* if ((cur_conns[0] < '8' && which == cur_conns[0] - '0') ||
+        (cur_conns[1] < '8' && which == cur_conns[1] - '0'))
+        return dupstr("undo"); */
+
+    char* buffer = snewn(50, char);
+    sprintf(buffer, "%d%d%d", move.x + 2, move.y + 2, cur_pos);
+    ui->cx = x;
+    ui->cy = y;
+    return buffer;
 }
 
 static game_state* execute_move(const game_state* state, const char* move) {
@@ -591,19 +676,43 @@ static void game_redraw(drawing* dr,
         draw_rect_outline(dr, BORDER + ui->cx * ds->tilesize + 1,
                           BORDER + ui->cy * ds->tilesize + 1, ds->tilesize - 1,
                           ds->tilesize - 1, COL_HIGHLIGHT);
+        /* 9- ui->show_dests % 2 */
+        if (ui->show_dests) {
+            int cur_pos = (ui->cy * w + ui->cx);
+            char* conns = state->conn_pairs + 2 * cur_pos;
+            int i, di;
+            if (conns[0] == '8' && conns[1] == '8') {
+                i = (ui->show_dests == 3 ? 1 : 0);
+                di = (ui->show_dests > 1 ? 2 : 1);
+            } else if (conns[0] == '8' || conns[1] == '8') {
+                i = (conns[0] + conns[1] + state->grid[cur_pos]) % 2;
+                di = 2;
+            } else {
+                i = 8;
+            }
 
-        int i, cur_pos = (ui->cy * w + ui->cx);
-        char* conns = state->conn_pairs + 2 * cur_pos;
-        for (i = 0; i < 8; i++) {
-            int neighbor = attempt_move(cur_pos, knight_moves[i], w, h);
-            if (neighbor < 0 || !state->grid[neighbor])
-                continue;
-            if ((conns[0] == '8' && conns[1] == '8') ||
-                (i + conns[0] + conns[1] + state->grid[cur_pos]) % 2 == 0)
+            for (; i < 8; i += di) {
+                int neighbor = attempt_move(cur_pos, knight_moves[i], w, h);
+                if (neighbor < 0 || !state->grid[neighbor])
+                    continue;
+
                 draw_rect_corners(dr,
                                   BORDER + (neighbor % w + 0.5) * ds->tilesize,
                                   BORDER + (neighbor / w + 0.5) * ds->tilesize,
                                   ds->tilesize / 4, COL_SELECTED);
+            }
+            /* for (; i < 8; i += di) {
+                int neighbor = attempt_move(cur_pos, knight_moves[i], w, h);
+                if (neighbor < 0 || !state->grid[neighbor])
+                    continue;
+
+                if ((conns[0] == '8' && conns[1] == '8') ||
+                    (i + conns[0] + conns[1] + state->grid[cur_pos]) % 2 == 0)
+                    draw_rect_corners(
+                        dr, BORDER + (neighbor % w + 0.5) * ds->tilesize,
+                        BORDER + (neighbor / w + 0.5) * ds->tilesize,
+                        ds->tilesize / 4, COL_SELECTED);
+            } */
         }
     }
 

@@ -401,6 +401,10 @@ static void game_changed_state(game_ui* ui,
         ui->visible = true;
         ui->cx = newstate->cx;
         ui->cy = newstate->cy;
+        char* conns =
+            newstate->conn_pairs + 2 * (ui->cy * newstate->w + ui->cx);
+        if (conns[0] < '8' && conns[1] < '8')
+            ui->show_dests = 0;
     } else
         ui->show_dests = 0;
 }
@@ -495,6 +499,9 @@ static char* interpret_move(const game_state* state,
         return NULL;
     }
 
+    int cur_pos = ui->cy * w + ui->cx;
+    char* cur_conns = state->conn_pairs + 2 * cur_pos;
+
     if (!ui->show_dests) {
         if (button == CURSOR_UP) {
             ui->cy = max(ui->cy - 1, 0);
@@ -504,29 +511,19 @@ static char* interpret_move(const game_state* state,
             ui->cx = max(ui->cx - 1, 0);
         } else if (button == CURSOR_RIGHT) {
             ui->cx = min(ui->cx + 1, state->w - 1);
-        } else {
+        } else if (state->grid[cur_pos]) {
             ui->show_dests = 2;
         }
         return UI_UPDATE;
     }
 
-    int cur_pos = ui->cy * w + ui->cx;
-    char* cur_conns = state->conn_pairs + 2 * cur_pos;
-
     if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
-        if (!state->grid[cur_pos])
-            return NULL;
-
-        if (cur_conns[0] == '8' && cur_conns[1] == '8') {
-            if (ui->show_dests == 0)
-                ui->show_dests++;
+        if (cur_conns[0] == '8' && cur_conns[1] == '8')
             ui->show_dests = (ui->show_dests + 1) % 4;
-        } else
+        else
             ui->show_dests = (ui->show_dests ? 0 : 2);
         return UI_UPDATE;
     }
-
-    ui->show_dests = 2;
 
     int moves[2];
     if (button == CURSOR_RIGHT) {
@@ -548,28 +545,27 @@ static char* interpret_move(const game_state* state,
         int new = attempt_move(cur_pos, knight_moves[moves[i]], w, h);
         char* new_conns = state->conn_pairs + 2 * new;
 
-        if (new == -1 || !state->grid[cur_pos] || !state->grid[new] ||
-            (((new_conns[0] < '8' && new_conns[1] < '8') ||
-              (cur_conns[0] < '8' && cur_conns[1] < '8')) &&
-             (moves[i] + 4) % 8 + '0' != new_conns[0] &&
-             (moves[i] + 4) % 8 + '0' != new_conns[1]))
+        if (new == -1 || !state->grid[cur_pos] || !state->grid[new])
+            moves[i] = -1;
+        else if (((cur_conns[0] < '8' && cur_conns[1] < '8') ||
+                  (new_conns[0] < '8' && new_conns[1] < '8')) &&
+                 (i + 4) % 8 + '0' != new_conns[0] &&
+                 (i + 4) % 8 + '0' != new_conns[1])
+            moves[i] = -1;
+        else if ((cur_conns[0] < '8' || cur_conns[1] < '8') &&
+                 (cur_conns[0] + cur_conns[1] + state->grid[cur_pos] + i + 1) %
+                     2)
             moves[i] = -1;
     }
 
-    if (moves[0] < 0 && moves[1] < 0)
+    if (moves[0] == -1 && moves[1] == -1)
         return NULL;
 
-    if (moves[0] >= 0 && moves[1] >= 0) {
+    if (moves[0] > -1 && moves[1] > -1) {
         if (ui->show_dests == 1) {
             ui->show_dests = 2;
             return UI_UPDATE;
-        } else if (cur_conns[0] == '8' && cur_conns[1] == '8') {
-            /* I need to hide unambiguous but invalid moves regardless of the
-             * value of ui->show_dests (I mean invalid because of orthogonality
-             * rules) */
-            ;
-        } else if (ui->show_dests == 2 &&
-                   (cur_conns[0] < '8' || cur_conns[1] < '8')) {
+        } else if (ui->show_dests == 3) {
             moves[0] = moves[1];
         }
     } else if (moves[0] == -1) {
@@ -579,6 +575,7 @@ static char* interpret_move(const game_state* state,
     char* buffer = snewn(50, char);
     point move = knight_moves[moves[0]];
     int new_pos = cur_pos + move.y * w + move.x;
+
     sprintf(buffer, "%d%d%d", move.x + 2, move.y + 2, cur_pos);
     ui->cx = new_pos % w;
     ui->cy = new_pos / w;
@@ -748,13 +745,12 @@ static void game_redraw(drawing* dr,
 
                 if (new == -1 || !state->grid[cur_pos] || !state->grid[new])
                     dest[i] = -1;
-                if ((cur_filled || new_filled) &&
-                    (i + 4) % 8 + '0' != new_conns[0] &&
-                    (i + 4) % 8 + '0' != new_conns[1])
+                else if (cur_filled || new_filled)
                     dest[i] = -1;
-                if ((cur_conns[0] + cur_conns[1] + state->grid[cur_pos] + i) %
-                        2 &&
-                    (cur_conns[0] < '8' || cur_conns[1] < '8'))
+                else if ((cur_conns[0] + cur_conns[1] + state->grid[cur_pos] +
+                          i) %
+                             2 &&
+                         (cur_conns[0] < '8' || cur_conns[1] < '8'))
                     dest[i] = -1;
                 else
                     dest[i] = new;
@@ -764,7 +760,7 @@ static void game_redraw(drawing* dr,
             if (ui->show_dests > 1)
                 for (i = 0; i < 4; i++)
                     if (dest[2 * i] > -1 && dest[(2 * i + 7) % 8] > -1) {
-                        if (ui->show_dests == 2)
+                        if (ui->show_dests == 3)
                             dest[(2 * i + 7) % 8] = -1;
                         else
                             dest[2 * i] = -1;

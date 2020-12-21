@@ -415,15 +415,6 @@ static char* interpret_move(const game_state* state,
                             int x,
                             int y,
                             int button) {
-    int w = state->w, h = state->h;
-    x = (x - BORDER) / ds->tilesize;
-    y = (y - BORDER) / ds->tilesize;
-
-    int cur_pos = ui->cy * w + ui->cx;
-    int new_pos = y * w + x;
-    char* cur_conns = state->conn_pairs + 2 * cur_pos;
-    char* new_conns = state->conn_pairs + 2 * new_pos;
-
     button = button & ~MOD_MASK;
     if (button == 'w' || button == 'W')
         button = CURSOR_UP;
@@ -433,6 +424,20 @@ static char* interpret_move(const game_state* state,
         button = CURSOR_DOWN;
     else if (button == 'a' || button == 'A')
         button = CURSOR_LEFT;
+
+    if (button != CURSOR_UP && button != CURSOR_DOWN && button != CURSOR_LEFT &&
+        button != CURSOR_RIGHT && button != CURSOR_SELECT &&
+        button != CURSOR_SELECT2 && button != '\b' && button != LEFT_RELEASE)
+        return NULL;
+
+    int w = state->w, h = state->h;
+    x = (x - BORDER) / ds->tilesize;
+    y = (y - BORDER) / ds->tilesize;
+
+    int cur_pos = ui->cy * w + ui->cx;
+    int new_pos = y * w + x;
+    char* cur_conns = state->conn_pairs + 2 * cur_pos;
+    char* new_conns = state->conn_pairs + 2 * new_pos;
 
     if (button == LEFT_RELEASE) {
         if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
@@ -447,9 +452,13 @@ static char* interpret_move(const game_state* state,
         }
 
         if (ui->cx == x && ui->cy == y) {
-            ui->visible = false;
+            if (ui->show_dests != 1)
+                ui->show_dests = 1;
+            else
+                ui->visible = false;
             return UI_UPDATE;
         }
+        ui->show_dests = 1;
 
         int dx = x - ui->cx, dy = y - ui->cy;
         /* Not a knights move away, change position instead of making a move */
@@ -459,8 +468,13 @@ static char* interpret_move(const game_state* state,
             return UI_UPDATE;
         }
 
+        /* This ugly formula finds the index i of {dx, dy} in knight_moves */
+        int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
+
         if (state->grid[new_pos] &&
-            (new_conns[0] == '8' || new_conns[1] == '8')) {
+            (new_conns[0] == '8' || new_conns[1] == '8' ||
+             (new_conns[0] - '0' + 4) % 8 == i ||
+             (new_conns[1] - '0' + 4) % 8 == i)) {
             char* buffer = snewn(15, char);
             sprintf(buffer, "%d%d%d", dx + 2, dy + 2, ui->cy * w + ui->cx);
             ui->cx = x;
@@ -471,28 +485,28 @@ static char* interpret_move(const game_state* state,
         return NULL;
     }
 
-    if (!ui->visible && (button == CURSOR_UP || button == CURSOR_DOWN ||
-                         button == CURSOR_LEFT || button == CURSOR_RIGHT ||
-                         button == CURSOR_SELECT || button == CURSOR_SELECT2)) {
+    if (!ui->visible) {
         ui->visible = true;
         ui->show_dests = 0;
         return UI_UPDATE;
-    } else if (!ui->show_dests) {
-        if (button == CURSOR_UP && ui->cy > 0) {
-            ui->cy--;
-        } else if (button == CURSOR_DOWN && ui->cy < state->h - 1) {
-            ui->cy++;
-        } else if (button == CURSOR_LEFT && ui->cx > 0) {
-            ui->cx--;
-        } else if (button == CURSOR_RIGHT && ui->cx < state->w - 1) {
-            ui->cx++;
-        } else if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
-            ui->show_dests = 2;
+    }
+
+    if (!ui->show_dests) {
+        if (button == CURSOR_UP) {
+            ui->cy = max(ui->cy - 1, 0);
+        } else if (button == CURSOR_DOWN) {
+            ui->cy = min(ui->cy + 1, state->h - 1);
+        } else if (button == CURSOR_LEFT) {
+            ui->cx = max(ui->cx - 1, 0);
+        } else if (button == CURSOR_RIGHT) {
+            ui->cx = min(ui->cx + 1, state->w - 1);
         } else {
-            return NULL;
+            ui->show_dests = 2;
         }
         return UI_UPDATE;
-    } else if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
+    }
+
+    if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
         if (cur_conns[0] == '8' && cur_conns[1] == '8') {
             if (ui->show_dests == 0)
                 ui->show_dests++;
@@ -500,8 +514,23 @@ static char* interpret_move(const game_state* state,
         } else
             ui->show_dests = (ui->show_dests ? 0 : 2);
         return UI_UPDATE;
-    } else if (ui->show_dests == 1 && state->conn_pairs[2 * new_pos] == '8' &&
-               state->conn_pairs[2 * new_pos + 1] == '8') {
+    }
+
+    if (button == '\b') {
+        printf("Deleting not implemented!");
+        return NULL;
+    }
+
+    if (ui->show_dests == 1 && new_conns[0] == '8' && new_conns[1] == '8') {
+        /* FIXME: This disambiguation should only happen if the move itself is
+         * ambiguous, i.e. if the user tries to move right when only one of the
+         * moves to the right is possible should "just work." Right now, it
+         * takes 2 or 3 presses to work. The make this happen, we should try
+         * both moves and make a move if it's unambiguous, otherwise we
+         * disambiguate and return (preferentially choosing the same one
+         * as what pressing <space> or <enter> would for greater consistency).
+         * We also need to change redraw_game to reflect this change.
+         */
         ui->show_dests = 2;
         return UI_UPDATE;
     }
@@ -526,13 +555,10 @@ static char* interpret_move(const game_state* state,
 
     point move = knight_moves[which];
     int neighbor = attempt_move(cur_pos, move, w, h);
-    if (neighbor == -1 || !state->grid[neighbor])
+    if (neighbor == -1 || !state->grid[neighbor] ||
+        ((new_conns[0] - '0' + 4) % 8 != which &&
+         (new_conns[1] - '0' + 4) % 8 != which))
         return NULL;
-
-    /* If the move goes backwards, undo instead of walking over it twice */
-    /* if ((cur_conns[0] < '8' && which == cur_conns[0] - '0') ||
-        (cur_conns[1] < '8' && which == cur_conns[1] - '0'))
-        return dupstr("undo"); */
 
     char* buffer = snewn(50, char);
     sprintf(buffer, "%d%d%d", move.x + 2, move.y + 2, cur_pos);
@@ -554,11 +580,26 @@ static game_state* execute_move(const game_state* state, const char* move) {
     /* This ugly formula finds the index i of {dx, dy} in knight_moves */
     int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
-    gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] < '8')] = i + '0';
-    pos = pos + dy * gs->w + dx;
-    i = (i + 4) % 8;
-    if (gs->conn_pairs[2 * pos] == '8' || gs->conn_pairs[2 * pos + 1] == '8')
-        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] < '8')] = i + '0';
+    char* conns = gs->conn_pairs + 2 * pos;
+    if ((conns[0] < '8' && i == conns[0] - '0') ||
+        (conns[1] < '8' && i == conns[1] - '0')) {
+        /* The user is backtracking, remove connection */
+        conns[i == conns[1] - '0'] = '8';
+        pos = pos + dy * gs->w + dx;
+        conns = gs->conn_pairs + 2 * pos;
+        conns[(i + 4) % 8 == conns[1] - '0'] = '8';
+    } else {
+        conns[conns[0] < '8'] = i + '0';
+
+        pos = pos + dy * gs->w + dx;
+        conns = gs->conn_pairs + 2 * pos;
+        i = (i + 4) % 8;
+
+        if (conns[0] == '8' || conns[1] == '8')
+            /* FIXME: should landing on a visited cell be disallowed or allowed
+             * but highlighted in red? */
+            conns[conns[0] < '8'] = i + '0';
+    }
 
     gs->cx = pos % gs->w;
     gs->cy = pos / gs->w;

@@ -742,18 +742,6 @@ static void game_redraw(drawing* dr,
                                   BORDER + (neighbor / w + 0.5) * ds->tilesize,
                                   ds->tilesize / 4, COL_SELECTED);
             }
-            /* for (; i < 8; i += di) {
-                int neighbor = attempt_move(cur_pos, knight_moves[i], w, h);
-                if (neighbor < 0 || !state->grid[neighbor])
-                    continue;
-
-                if ((conns[0] == '8' && conns[1] == '8') ||
-                    (i + conns[0] + conns[1] + state->grid[cur_pos]) % 2 == 0)
-                    draw_rect_corners(
-                        dr, BORDER + (neighbor % w + 0.5) * ds->tilesize,
-                        BORDER + (neighbor / w + 0.5) * ds->tilesize,
-                        ds->tilesize / 4, COL_SELECTED);
-            } */
         }
     }
 
@@ -769,8 +757,9 @@ static void game_redraw(drawing* dr,
                 bx = (b % w + 0.5) * ds->tilesize + BORDER,
                 by = (b / w + 0.5) * ds->tilesize + BORDER;
 
-            if (a < b)
-                draw_line(dr, ax, ay, bx, by, COL_PATH);
+            /* I could draw a full line, but drawing only half helps with
+             * debugging (if we enter invalid state because of a bug) */
+            draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, COL_PATH);
 
             if (i % 2 == 0 && state->conn_pairs[i] < '8' &&
                 state->conn_pairs[i + 1] < '8')

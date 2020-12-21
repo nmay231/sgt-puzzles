@@ -401,7 +401,8 @@ static void game_changed_state(game_ui* ui,
         ui->visible = true;
         ui->cx = newstate->cx;
         ui->cy = newstate->cy;
-    }
+    } else
+        ui->show_dests = 0;
 }
 
 struct game_drawstate {
@@ -433,11 +434,6 @@ static char* interpret_move(const game_state* state,
     int w = state->w, h = state->h;
     x = (x - BORDER) / ds->tilesize;
     y = (y - BORDER) / ds->tilesize;
-
-    int cur_pos = ui->cy * w + ui->cx;
-    int new_pos = y * w + x;
-    char* cur_conns = state->conn_pairs + 2 * cur_pos;
-    char* new_conns = state->conn_pairs + 2 * new_pos;
 
     if (button == LEFT_RELEASE) {
         if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
@@ -471,6 +467,9 @@ static char* interpret_move(const game_state* state,
         /* This ugly formula finds the index i of {dx, dy} in knight_moves */
         int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
+        int new_pos = y * w + x;
+        char* new_conns = state->conn_pairs + 2 * new_pos;
+
         if (state->grid[new_pos] &&
             (new_conns[0] == '8' || new_conns[1] == '8' ||
              (new_conns[0] - '0' + 4) % 8 == i ||
@@ -491,6 +490,11 @@ static char* interpret_move(const game_state* state,
         return UI_UPDATE;
     }
 
+    if (button == '\b') {
+        printf("Deleting not implemented!\n");
+        return NULL;
+    }
+
     if (!ui->show_dests) {
         if (button == CURSOR_UP) {
             ui->cy = max(ui->cy - 1, 0);
@@ -506,7 +510,13 @@ static char* interpret_move(const game_state* state,
         return UI_UPDATE;
     }
 
+    int cur_pos = ui->cy * w + ui->cx;
+    char* cur_conns = state->conn_pairs + 2 * cur_pos;
+
     if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
+        if (!state->grid[cur_pos])
+            return NULL;
+
         if (cur_conns[0] == '8' && cur_conns[1] == '8') {
             if (ui->show_dests == 0)
                 ui->show_dests++;
@@ -516,54 +526,62 @@ static char* interpret_move(const game_state* state,
         return UI_UPDATE;
     }
 
-    if (button == '\b') {
-        printf("Deleting not implemented!");
-        return NULL;
-    }
+    ui->show_dests = 2;
 
-    if (ui->show_dests == 1 && new_conns[0] == '8' && new_conns[1] == '8') {
-        /* FIXME: This disambiguation should only happen if the move itself is
-         * ambiguous, i.e. if the user tries to move right when only one of the
-         * moves to the right is possible should "just work." Right now, it
-         * takes 2 or 3 presses to work. The make this happen, we should try
-         * both moves and make a move if it's unambiguous, otherwise we
-         * disambiguate and return (preferentially choosing the same one
-         * as what pressing <space> or <enter> would for greater consistency).
-         * We also need to change redraw_game to reflect this change.
-         */
-        ui->show_dests = 2;
-        return UI_UPDATE;
-    }
-
-    int which = 9;
-    if (cur_conns[0] == '8' && cur_conns[1] == '8')
-        which -= ui->show_dests % 2;
-    else
-        which -= (cur_conns[0] + cur_conns[1] + state->grid[cur_pos]) % 2;
-
-    if (button == CURSOR_UP) {
-        which = (which - 1) % 8;
-    } else if (button == CURSOR_RIGHT) {
-        which -= 7;
+    int moves[2];
+    if (button == CURSOR_RIGHT) {
+        moves[0] = 1;
+        moves[1] = 2;
     } else if (button == CURSOR_DOWN) {
-        which -= 5;
+        moves[0] = 3;
+        moves[1] = 4;
     } else if (button == CURSOR_LEFT) {
-        which -= 3;
+        moves[0] = 5;
+        moves[1] = 6;
     } else {
-        return NULL;
+        moves[0] = 7;
+        moves[1] = 0;
     }
 
-    point move = knight_moves[which];
-    int neighbor = attempt_move(cur_pos, move, w, h);
-    if (neighbor == -1 || !state->grid[neighbor] ||
-        ((new_conns[0] - '0' + 4) % 8 != which &&
-         (new_conns[1] - '0' + 4) % 8 != which))
+    int i;
+    for (i = 0; i < 2; i++) {
+        int new = attempt_move(cur_pos, knight_moves[moves[i]], w, h);
+        char* new_conns = state->conn_pairs + 2 * new;
+
+        if (new == -1 || !state->grid[cur_pos] || !state->grid[new] ||
+            (((new_conns[0] < '8' && new_conns[1] < '8') ||
+              (cur_conns[0] < '8' && cur_conns[1] < '8')) &&
+             (moves[i] + 4) % 8 + '0' != new_conns[0] &&
+             (moves[i] + 4) % 8 + '0' != new_conns[1]))
+            moves[i] = -1;
+    }
+
+    if (moves[0] < 0 && moves[1] < 0)
         return NULL;
+
+    if (moves[0] >= 0 && moves[1] >= 0) {
+        if (ui->show_dests == 1) {
+            ui->show_dests = 2;
+            return UI_UPDATE;
+        } else if (cur_conns[0] == '8' && cur_conns[1] == '8') {
+            /* I need to hide unambiguous but invalid moves regardless of the
+             * value of ui->show_dests (I mean invalid because of orthogonality
+             * rules) */
+            ;
+        } else if (ui->show_dests == 2 &&
+                   (cur_conns[0] < '8' || cur_conns[1] < '8')) {
+            moves[0] = moves[1];
+        }
+    } else if (moves[0] == -1) {
+        moves[0] = moves[1];
+    }
 
     char* buffer = snewn(50, char);
+    point move = knight_moves[moves[0]];
+    int new_pos = cur_pos + move.y * w + move.x;
     sprintf(buffer, "%d%d%d", move.x + 2, move.y + 2, cur_pos);
-    ui->cx = x;
-    ui->cy = y;
+    ui->cx = new_pos % w;
+    ui->cy = new_pos / w;
     return buffer;
 }
 
@@ -711,37 +729,54 @@ static void game_redraw(drawing* dr,
 
     /* Cursor and Available moves */
     if (ui->visible) {
-        draw_rect(dr, BORDER + ui->cx * ds->tilesize + 1,
-                  BORDER + ui->cy * ds->tilesize + 1, ds->tilesize - 1,
-                  ds->tilesize - 1, COL_SELECTED);
-        draw_rect_outline(dr, BORDER + ui->cx * ds->tilesize + 1,
-                          BORDER + ui->cy * ds->tilesize + 1, ds->tilesize - 1,
-                          ds->tilesize - 1, COL_HIGHLIGHT);
-        /* 9- ui->show_dests % 2 */
+        int i; /* I kinda like this fancy, if oddlooking, cursor */
+        for (i = 0; i < 3; i++)
+            draw_rect_corners(dr, BORDER + (ui->cx + 0.5) * ds->tilesize,
+                              BORDER + (ui->cy + 0.5) * ds->tilesize,
+                              ds->tilesize / 4 + i, COL_SELECTED);
+
         if (ui->show_dests) {
-            int cur_pos = (ui->cy * w + ui->cx);
-            char* conns = state->conn_pairs + 2 * cur_pos;
-            int i, di;
-            if (conns[0] == '8' && conns[1] == '8') {
-                i = (ui->show_dests == 3 ? 1 : 0);
-                di = (ui->show_dests > 1 ? 2 : 1);
-            } else if (conns[0] == '8' || conns[1] == '8') {
-                i = (conns[0] + conns[1] + state->grid[cur_pos]) % 2;
-                di = 2;
-            } else {
-                i = 8;
+            int i, dest[8], cur_pos = (ui->cy * w + ui->cx);
+            char* cur_conns = state->conn_pairs + 2 * cur_pos;
+            bool cur_filled = cur_conns[0] < '8' && cur_conns[1] < '8';
+
+            /* Find all possible moves */
+            for (i = 0; i < 8; i++) {
+                int new = attempt_move(cur_pos, knight_moves[i], w, h);
+                char* new_conns = state->conn_pairs + 2 * new;
+                bool new_filled = new_conns[0] < '8' && new_conns[1] < '8';
+
+                if (new == -1 || !state->grid[cur_pos] || !state->grid[new])
+                    dest[i] = -1;
+                if ((cur_filled || new_filled) &&
+                    (i + 4) % 8 + '0' != new_conns[0] &&
+                    (i + 4) % 8 + '0' != new_conns[1])
+                    dest[i] = -1;
+                if ((cur_conns[0] + cur_conns[1] + state->grid[cur_pos] + i) %
+                        2 &&
+                    (cur_conns[0] < '8' || cur_conns[1] < '8'))
+                    dest[i] = -1;
+                else
+                    dest[i] = new;
             }
 
-            for (; i < 8; i += di) {
-                int neighbor = attempt_move(cur_pos, knight_moves[i], w, h);
-                if (neighbor < 0 || !state->grid[neighbor])
-                    continue;
+            /* Disambiguate moves for keyboard controls */
+            if (ui->show_dests > 1)
+                for (i = 0; i < 4; i++)
+                    if (dest[2 * i] > -1 && dest[(2 * i + 7) % 8] > -1) {
+                        if (ui->show_dests == 2)
+                            dest[(2 * i + 7) % 8] = -1;
+                        else
+                            dest[2 * i] = -1;
+                    }
 
-                draw_rect_corners(dr,
-                                  BORDER + (neighbor % w + 0.5) * ds->tilesize,
-                                  BORDER + (neighbor / w + 0.5) * ds->tilesize,
-                                  ds->tilesize / 4, COL_SELECTED);
-            }
+            /* Outline reachable destinations */
+            for (i = 0; i < 8; i++)
+                if (dest[i] > -1)
+                    draw_rect_corners(
+                        dr, BORDER + (dest[i] % w + 0.5) * ds->tilesize,
+                        BORDER + (dest[i] / w + 0.5) * ds->tilesize,
+                        ds->tilesize / 4, COL_SELECTED);
         }
     }
 

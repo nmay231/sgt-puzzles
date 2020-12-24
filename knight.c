@@ -23,7 +23,7 @@ typedef struct point point;
 
 /**
  * All of the knight's moves ordered clockwise.
- * knight_moves[0] is approximately 1:15 o'clock.
+ * knight_moves[0] is slightly less than "1:00 o'clock".
  *
  * Note: since moves that are orthogonal to each other are 2, 4,
  * or 6 apart in the list, it will be common to add the indexes
@@ -79,7 +79,8 @@ struct game_state {
     /* Flags for if a conn_pairs was included in the puzzle hints */
     bool* start_pairs;
 
-    /* The ending cursor position after the last move. Used to update game_ui */
+    /* The ending cursor position after the last move. Used to update
+     * game_ui */
     int cx, cy;
 };
 
@@ -213,9 +214,141 @@ void shift_to_beginning(pair* array, int len, int required, int* sync_index) {
 }
 
 /* Modify gs in-place to give a unique solution. guaranteed is whether a
- * solution is guaranteed to exist, i.e. did we generate the puzzle or was it
- * user input. */
-void unique_solution(game_state* gs, bool guaranteed) {}
+ * solution is guaranteed to exist, i.e. did we generate the puzzle or was
+ * it user input. */
+game_state* unique_solution(game_state* gs, bool guaranteed) {
+    int w = gs->w, h = gs->h;
+
+    /* Which cells of the grid have yet to be restricted, i.e. which cells
+     * have connections that (might) be disqualified */
+    tdq* todo = tdq_new(w * h);
+    tdq_fill(todo);
+
+    /* Number of connections, each cell will have two when the grid is
+     * filled */
+    int* num_conns = snewn(w * h, int);
+    /* Which knights moves are valid for each cell */
+    bool* can_connect = snewn(8 * w * h, bool);
+    /* Which moves are part of the tour, aka the solution */
+    bool* connected = snewn(8 * w * h, bool);
+    /* Precomputed neighbors of cells */
+    int* neighbors = snewn(8 * w * h, int);
+
+    int i, j;
+    for (i = 0; i < w * h; i++) {
+        num_conns[i] = gs->grid[i] ? 0 : 2;
+
+        for (j = i; j < i + 8; j++) {
+            neighbors[j] = attempt_move(i, knight_moves[j - i], w, h);
+            can_connect[j] = neighbors[j] > -1 && gs->grid[i] > 0;
+            connected[j] = false;
+        }
+    }
+    num_conns[gs->ends[0]] = 1;
+    num_conns[gs->ends[1]] = 1;
+
+    /* FIXME: Update unique_solution() to use struct graph */
+
+    int pos = tdq_remove(todo);
+    while (pos > -1) {
+        if (!gs->grid[pos])
+            continue;
+
+        int* neigh = neighbors + 8 * pos;
+        bool* ccon = can_connect + 8 * pos;
+        for (i = 0; i < 8; i++)
+            if (num_conns[neigh[i]] == 2 && !connected[8 * neigh[i] + i])
+                ccon[i] = false;
+
+        int even = ccon[0] + ccon[2] + ccon[4] + ccon[6];
+        int odd = ccon[1] + ccon[3] + ccon[5] + ccon[7];
+
+        if (even + odd < 2 || (gs->grid[pos] == 2 && even == 1 && odd == 1) ||
+            (gs->grid[pos] == 3 && (!even || !odd)))
+            /* No solution */
+            assert(false);
+
+        if (num_conns[pos] == 1 && gs->grid[pos] == 1) {
+            /* FIXME */
+        } else if (num_conns[pos] == 0 && gs->grid[pos] == 2) {
+            int min = min(even, odd), max = max(even, odd);
+            if (min < 2 && max == 2) {
+                int even_is_min = even == min;
+                for (i = 0; i < 8; i++) {
+                    tdq_add(todo, neigh[i]);
+                    if (ccon[i] && i % 2 == even_is_min) {
+                        connected[8 * pos + i] = true;
+                        connected[8 * neigh[i] + (i + 4) % 8] = true;
+                        num_conns[neigh[i]]++;
+                    } else if (ccon[i] && i % 2 != even_is_min) {
+                        ccon[i] == false;
+                        can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                    }
+                }
+                num_conns[pos] = 2;
+            } else if (min == 1) {
+                for (i = (min == odd); i < 8; i += 2)
+                    if (ccon[i]) {
+                        ccon[i] = false;
+                        can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                        tdq_add(todo, neigh[i]);
+                    }
+            }
+
+        } else if (num_conns[pos] == 0 && gs->grid[pos] == 3) {
+            int even_odd[2] = {even, odd};
+            for (j = 0; j < 2; j++)
+                if (even_odd[j] == 1) {
+                    num_conns[pos]++;
+                    for (i = j; i < 8; i += 2) {
+                        tdq_add(todo, neigh[i]);
+                        if (ccon[i]) {
+                            connected[8 * pos + i] = true;
+                            connected[8 * neigh[i] + (i + 4) % 8] = true;
+                            num_conns[neigh[i]]++;
+                        }
+                    }
+                }
+
+        } else if (num_conns[pos] == 1) {
+            int which;
+            for (i = 0; i < 8; i++)
+                if (connected[8 * pos + i]) {
+                    which = i;
+                    break;
+                }
+            int odd_or_even = (which + (gs->grid[pos] == 3)) % 2;
+
+            for (i = 0; i < 8; i++) {
+                if (odd_or_even != i % 2 && ccon[i]) {
+                    ccon[i] = false;
+                    can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                    tdq_add(todo, neigh[i]);
+                } else if (even + odd == 2 && !connected[8 * pos + i] &&
+                           odd_or_even == (i + (gs->grid[pos] == 3)) % 2) {
+                    num_conns[pos]++;
+                    connected[8 * pos + i] = true;
+                    connected[8 * neigh[i] + (i + 4) % 8] = true;
+                    tdq_add(todo, neigh[i]);
+                }
+            }
+        }
+
+        if (num_conns[pos] == 2) {
+            for (i = 0; i < 8; i++)
+                if (ccon[8 * pos + i] && !connected[8 * pos + i])
+                    ccon[i] = false;
+            can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+            tdq_add(todo, neigh[i]);
+        }
+
+        pos = tdq_remove(todo);
+    }
+
+    sfree(num_conns);
+    sfree(can_connect);
+    tdq_free(todo);
+}
 
 static char* new_game_desc(const game_params* params,
                            random_state* rs,
@@ -268,7 +401,8 @@ generate_grid:
         }
 
         if (next_pos == -1) {
-            /* Warnsdorff heuristic failed or a tour is impossible, restart */
+            /* Warnsdorff heuristic failed or a tour is impossible, restart
+             */
             free_game(gs);
             goto generate_grid;
         }
@@ -371,8 +505,8 @@ struct game_ui {
 
     /* 0=don't show destinations, 1,2,3=show destinations. Using 2 and 3
      * disambiguates the first move of a cell when using arrow key controls
-     * while 1 shows all. With 2 or 3, the moves shown are slanted left or right
-     * from the main axis. */
+     * while 1 shows all. With 2 or 3, the moves shown are slanted left or
+     * right from the main axis. */
     int show_dests;
 };
 
@@ -461,14 +595,16 @@ static char* interpret_move(const game_state* state,
         ui->show_dests = 1;
 
         int dx = x - ui->cx, dy = y - ui->cy;
-        /* Not a knights move away, change position instead of making a move */
+        /* Not a knights move away, change position instead of making a move
+         */
         if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;
         }
 
-        /* This ugly formula finds the index i of {dx, dy} in knight_moves */
+        /* This ugly formula finds the index i of {dx, dy} in knight_moves
+         */
         int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
         int new_pos = y * w + x;
@@ -611,8 +747,8 @@ static game_state* execute_move(const game_state* state, const char* move) {
         i = (i + 4) % 8;
 
         if (conns[0] == '8' || conns[1] == '8')
-            /* FIXME: should landing on a visited cell be disallowed or allowed
-             * but highlighted in red? */
+            /* FIXME: should landing on a visited cell be disallowed or
+             * allowed but highlighted in red? */
             conns[conns[0] < '8'] = i + '0';
     }
 

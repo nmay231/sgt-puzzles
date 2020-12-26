@@ -452,7 +452,7 @@ generate_grid:
 
     gs->ends[1] = pos;
 
-    unique_solution(gs, true);
+    /* unique_solution(gs, true); */
 
     /* ==== Convert to string ==== */
     char *string = snewn(6 * w * h, char), *p = string;
@@ -899,17 +899,21 @@ static void game_redraw(drawing* dr,
 
     /* Mark unvisited cells and cells with orthogonal turns */
     int i;
-    for (i = 0; i < w * h; i++)
+    for (i = 0; i < w * h; i++) {
+        int x = i % w, y = i / w;
         if (!state->grid[i]) {
-            int x = i % w, y = i / w;
             draw_rect(dr, BORDER + x * ds->tilesize, BORDER + y * ds->tilesize,
                       ds->tilesize, ds->tilesize, COL_OUTLINE);
         } else if (state->grid[i] == 2) {
-            int x = i % w, y = i / w;
             draw_rect(dr, BORDER + (x + 0.4) * ds->tilesize,
                       BORDER + (y + 0.4) * ds->tilesize, ds->tilesize * 0.2 + 1,
                       ds->tilesize * 0.2 + 1, COL_OUTLINE);
+        } else if (state->grid[i] == 1) {
+            draw_circle(dr, BORDER + (x + 0.5) * ds->tilesize,
+                        BORDER + (y + 0.5) * ds->tilesize, 0.2 * ds->tilesize,
+                        COL_BACKGROUND, COL_OUTLINE);
         }
+    }
 
     /* Cursor and Available moves */
     if (ui->visible) {
@@ -979,8 +983,11 @@ static void game_redraw(drawing* dr,
              * debugging (if we enter invalid state because of a bug) */
             draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, COL_PATH);
 
-            if (i % 2 == 0 && state->conn_pairs[i] < '8' &&
-                state->conn_pairs[i + 1] < '8')
+            if (i % 2 == 0 &&
+                ((state->conn_pairs[i] < '8' &&
+                  state->conn_pairs[i + 1] < '8') ||
+                 (state->grid[i / 2] == 1 &&
+                  state->conn_pairs[i] + state->conn_pairs[i + 1] < 2 * '8')))
                 draw_circle(dr, ax, ay, 0.1 * ds->tilesize, COL_PATH, COL_PATH);
         }
     }

@@ -1,9 +1,9 @@
 # -*- makefile -*-
 
-KNIGHT_EXTRA = tree234
+KNIGHT_EXTRA = tdq
 
-knight : [X] GTK COMMON knight nullgame-icon|no-icon
-knight : [G] WINDOWS COMMON knight nullgame.res|noicon.res
+knight : [X] GTK COMMON knight KNIGHT_EXTRA nullgame-icon|no-icon
+knight : [G] WINDOWS COMMON knight KNIGHT_EXTRA nullgame.res|noicon.res
 
 ALL += knight[COMBINED] KNIGHT_EXTRA
 

@@ -35,6 +35,8 @@ static const point knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
                                       {1, 2},   {-1, 2},  {-2, 1},
                                       {-2, -1}, {-1, -2}, {0, 0}};
 
+/* FIXME: Didn't realize combi.c existed. Can I replace this with that? */
+
 /* (Almost) all combinations of choosing 2 of 9 ints, i.e. 9 choose 2.
  * The values are indexes of knight_moves in and out of the cell.
  * {8, 8} is missing because at least one move must go out of the cell.
@@ -213,6 +215,11 @@ void shift_to_beginning(pair* array, int len, int required, int* sync_index) {
     array[new_index] = PAIR_DNE;
 }
 
+void stdq_add(tdq* tdq, int k) {
+    if (k > -1)
+        tdq_add(tdq, k);
+}
+
 /* Modify gs in-place to give a unique solution. guaranteed is whether a
  * solution is guaranteed to exist, i.e. did we generate the puzzle or was
  * it user input. */
@@ -223,11 +230,10 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
      * have connections that (might) be disqualified */
     tdq* todo = tdq_new(w * h);
     tdq_fill(todo);
-
-    /* Number of connections, each cell will have two when the grid is
-     * filled */
+    /* Number of connections. If the grid is finished,
+     * this will be full of twos. */
     int* num_conns = snewn(w * h, int);
-    /* Which knights moves are valid for each cell */
+    /* Which knights moves are valid to make from each cell */
     bool* can_connect = snewn(8 * w * h, bool);
     /* Which moves are part of the tour, aka the solution */
     bool* connected = snewn(8 * w * h, bool);
@@ -238,50 +244,59 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
     for (i = 0; i < w * h; i++) {
         num_conns[i] = gs->grid[i] ? 0 : 2;
 
-        for (j = i; j < i + 8; j++) {
-            neighbors[j] = attempt_move(i, knight_moves[j - i], w, h);
-            can_connect[j] = neighbors[j] > -1 && gs->grid[i] > 0;
-            connected[j] = false;
+        for (j = 0; j < 8; j++) {
+            neighbors[8 * i + j] = attempt_move(i, knight_moves[j], w, h);
+            can_connect[8 * i + j] =
+                neighbors[8 * i + j] > -1 && gs->grid[i] > 0;
+            connected[8 * i + j] = false;
         }
     }
     num_conns[gs->ends[0]] = 1;
     num_conns[gs->ends[1]] = 1;
 
-    /* FIXME: Update unique_solution() to use struct graph */
-
     int pos = tdq_remove(todo);
     while (pos > -1) {
-        if (!gs->grid[pos])
+        if (!gs->grid[pos]) {
+            pos = tdq_remove(todo);
             continue;
+        }
 
         int* neigh = neighbors + 8 * pos;
         bool* ccon = can_connect + 8 * pos;
         for (i = 0; i < 8; i++)
-            if (num_conns[neigh[i]] == 2 && !connected[8 * neigh[i] + i])
+            if (ccon[i] && num_conns[neigh[i]] == 2 && !connected[8 * pos + i])
                 ccon[i] = false;
 
         int even = ccon[0] + ccon[2] + ccon[4] + ccon[6];
         int odd = ccon[1] + ccon[3] + ccon[5] + ccon[7];
 
-        if (even + odd < 2 || (gs->grid[pos] == 2 && even == 1 && odd == 1) ||
-            (gs->grid[pos] == 3 && (!even || !odd)))
+        if (gs->grid[pos] != 1 &&
+            ((gs->grid[pos] == 2 && even == 1 && odd == 1) ||
+             (gs->grid[pos] == 3 && (!even || !odd)) || even + odd < 2))
             /* No solution */
             assert(false);
 
         if (num_conns[pos] == 1 && gs->grid[pos] == 1) {
-            /* FIXME */
+            if (even + odd == 1)
+                for (i = 0; i < 8; i++)
+                    if (ccon[i]) {
+                        connected[8 * pos + i] = true;
+                        connected[8 * neigh[i] + (i + 4) % 8] = true;
+                        num_conns[pos]++;
+                    }
+
         } else if (num_conns[pos] == 0 && gs->grid[pos] == 2) {
             int min = min(even, odd), max = max(even, odd);
             if (min < 2 && max == 2) {
                 int even_is_min = even == min;
                 for (i = 0; i < 8; i++) {
-                    tdq_add(todo, neigh[i]);
+                    stdq_add(todo, neigh[i]);
                     if (ccon[i] && i % 2 == even_is_min) {
                         connected[8 * pos + i] = true;
                         connected[8 * neigh[i] + (i + 4) % 8] = true;
                         num_conns[neigh[i]]++;
                     } else if (ccon[i] && i % 2 != even_is_min) {
-                        ccon[i] == false;
+                        can_connect[8 * pos + i] = false;
                         can_connect[8 * neigh[i] + (i + 4) % 8] = false;
                     }
                 }
@@ -289,9 +304,9 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
             } else if (min == 1) {
                 for (i = (min == odd); i < 8; i += 2)
                     if (ccon[i]) {
-                        ccon[i] = false;
+                        can_connect[8 * pos + i] = false;
                         can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-                        tdq_add(todo, neigh[i]);
+                        stdq_add(todo, neigh[i]);
                     }
             }
 
@@ -301,7 +316,7 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
                 if (even_odd[j] == 1) {
                     num_conns[pos]++;
                     for (i = j; i < 8; i += 2) {
-                        tdq_add(todo, neigh[i]);
+                        stdq_add(todo, neigh[i]);
                         if (ccon[i]) {
                             connected[8 * pos + i] = true;
                             connected[8 * neigh[i] + (i + 4) % 8] = true;
@@ -311,43 +326,62 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
                 }
 
         } else if (num_conns[pos] == 1) {
-            int which;
+            int which = 8;
             for (i = 0; i < 8; i++)
                 if (connected[8 * pos + i]) {
                     which = i;
                     break;
                 }
+
+            assert(which < 8);
             int odd_or_even = (which + (gs->grid[pos] == 3)) % 2;
 
             for (i = 0; i < 8; i++) {
-                if (odd_or_even != i % 2 && ccon[i]) {
-                    ccon[i] = false;
+                if (!ccon[i] || i == which)
+                    continue;
+                else if (odd_or_even != i % 2) {
+                    can_connect[8 * pos + i] = false;
                     can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-                    tdq_add(todo, neigh[i]);
-                } else if (even + odd == 2 && !connected[8 * pos + i] &&
-                           odd_or_even == (i + (gs->grid[pos] == 3)) % 2) {
+                    stdq_add(todo, neigh[i]);
+                } else if (even + odd == 2 && odd_or_even == i % 2) {
                     num_conns[pos]++;
+                    num_conns[neigh[i]]++;
                     connected[8 * pos + i] = true;
                     connected[8 * neigh[i] + (i + 4) % 8] = true;
-                    tdq_add(todo, neigh[i]);
+                    stdq_add(todo, neigh[i]);
                 }
             }
         }
 
         if (num_conns[pos] == 2) {
             for (i = 0; i < 8; i++)
-                if (ccon[8 * pos + i] && !connected[8 * pos + i])
-                    ccon[i] = false;
-            can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-            tdq_add(todo, neigh[i]);
+                if (ccon[i] && !connected[8 * pos + i]) {
+                    can_connect[8 * pos + i] = false;
+                    can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                }
+            stdq_add(todo, neigh[i]);
         }
 
         pos = tdq_remove(todo);
     }
 
+    for (i = 0; i < w * h; i++) {
+        assert(num_conns[i] == 2);
+        int j;
+        for (j = 0; j < 8; j++)
+            if (connected[8 * i + j])
+                gs->conn_pairs[2 * i + (gs->conn_pairs[2 * i] != '8')] =
+                    j + '0';
+    }
+
+    sfree(connected);
     sfree(num_conns);
     sfree(can_connect);
     tdq_free(todo);
+    return gs;
+
+#undef CONNECT
+#undef PREVENT
 }
 
 static char* new_game_desc(const game_params* params,
@@ -413,25 +447,31 @@ generate_grid:
 
         pos = next_pos;
         gs->grid[pos] = 1;
-        /* FIXME: Memory issue caught by valgrind? */
         moves[gs->ncells - cells_left - 1] = move_i;
     }
 
     gs->ends[1] = pos;
 
-    /* Overload solve_game() to restrict a solvable
-     * grid to have a *unique* solution */
-    /* game_state* old = gs;
-    char* starting_moves = solve_game(old, NULL, "uniquify", NULL);
-    gs = execute_move(old, starting_moves);
-    free_game(old);
-    sfree(starting_moves); */
+    unique_solution(gs, true);
 
     /* ==== Convert to string ==== */
-    char *string = snewn(w * h + 1, char), *p = string;
+    char *string = snewn(6 * w * h, char), *p = string;
     for (i = 0; i < w * h; i++)
         sprintf(p++, "%d", gs->grid[i]);
-    *p = '\0';
+    *(p++) = '.';
+    for (i = 0; i < 2 * w * h; i++) {
+        int move = gs->conn_pairs[i] - '0';
+        if (move < 8 && i / 2 < attempt_move(i / 2, knight_moves[move], w, h)) {
+            sprintf(p, "%d%d.", move, i / 2);
+            while (isdigit(*(++p)))
+                ;
+            p++;
+        }
+    }
+
+    printf("%d,%d\n", gs->ends[0], gs->ends[1]);
+
+    *(--p) = '\0'; /* Replace last period with null character */
     free_game(gs);
     return string;
 }
@@ -443,21 +483,32 @@ static const char* validate_desc(const game_params* params, const char* desc) {
 static game_state* new_game(midend* me,
                             const game_params* params,
                             const char* desc) {
+    char* p = dupstr(desc);
     int w = params->w, h = params->h;
     game_state* gs = init_game_state(w, h);
 
-    int i, grid = atoi(desc);
+    int i;
     for (i = 0; i < w * h; i++) {
-        int c = desc[i] - '0';
+        int c = *p - '0';
+        p++;
         gs->grid[i] = c;
         if (c == 1) {
             gs->ends[gs->ends > 0 ? 1 : 0] = i;
         } else if (c == 0) {
             gs->nunvisited++;
         }
-        grid = grid / 10;
     }
     gs->ncells = w * h - gs->nunvisited;
+
+    while (*p) {
+        int i = *(++p) - '0', pos = atoi(++p);
+        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] != '8')] = i + '0';
+        pos = pos + knight_moves[i].y * w + knight_moves[i].x;
+        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] != '8')] =
+            (i + 4) % 8 + '0';
+        while (isdigit(*(++p)))
+            ;
+    }
     return gs;
 }
 

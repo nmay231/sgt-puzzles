@@ -707,8 +707,12 @@ static void game_changed_state(game_ui* ui,
         ui->cy = newstate->cy;
         char* conns =
             newstate->conn_pairs + 2 * (ui->cy * newstate->w + ui->cx);
-        if (conns[0] < '8' && conns[1] < '8')
-            ui->show_dests = 0;
+        if (conns[0] < '8' && conns[1] < '8') {
+            if (ui->show_dests == 1)
+                ui->visible = false;
+            else
+                ui->show_dests = 0;
+        }
     } else {
         if (ui->show_dests == 1)
             ui->visible = false;

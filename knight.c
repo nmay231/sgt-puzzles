@@ -421,14 +421,12 @@ bool unique_solution(game_state* gs,
                 int index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
 
                 gs->conn_pairs[index] = move + '0';
-                gs->start_pairs[index] = true;
 
                 pos = pos + knight_moves[move].y * w + knight_moves[move].x;
                 move = (move + 4) % 8;
                 index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
 
                 gs->conn_pairs[index] = move + '0';
-                gs->start_pairs[index] = true;
             }
         }
         goto cleanup_and_return;
@@ -619,11 +617,17 @@ static game_state* new_game(midend* me,
     gs->ncells = w * h - gs->nunvisited;
 
     while (*p) {
-        int i = *(++p) - '0', pos = atoi(++p);
-        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] != '8')] = i + '0';
+        int i = *(++p) - '0', pos = atoi(++p),
+            index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
+        gs->conn_pairs[index] = i + '0';
+        gs->start_pairs[index] = true;
+
         pos = pos + knight_moves[i].y * w + knight_moves[i].x;
-        gs->conn_pairs[2 * pos + (gs->conn_pairs[2 * pos] != '8')] =
-            (i + 4) % 8 + '0';
+        index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
+
+        gs->conn_pairs[index] = (i + 4) % 8 + '0';
+        gs->start_pairs[index] = true;
+
         while (isdigit(*(++p)))
             ;
     }
@@ -645,8 +649,8 @@ static game_state* dup_game(const game_state* state) {
         ret->grid[i] = state->grid[i];
         ret->conn_pairs[2 * i] = state->conn_pairs[2 * i];
         ret->conn_pairs[2 * i + 1] = state->conn_pairs[2 * i + 1];
-        ret->start_pairs[2 * i] = state->start_pairs[2 * i + 1];
-        ret->start_pairs[2 * i] = state->start_pairs[2 * i + 1];
+        ret->start_pairs[2 * i] = state->start_pairs[2 * i];
+        ret->start_pairs[2 * i + 1] = state->start_pairs[2 * i + 1];
     }
 
     return ret;
@@ -781,9 +785,19 @@ static char* interpret_move(const game_state* state,
             return UI_UPDATE;
         }
 
-        /* This ugly formula finds the index i of {dx, dy} in knight_moves
-         */
+        /* This ugly formula finds the index i of {dx,dy} in knight_moves */
         int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
+
+        int cur_pos = ui->cy * w + ui->cx;
+        char* cur_conns = state->conn_pairs + 2 * cur_pos;
+        bool* start_conns = state->start_pairs + 2 * cur_pos;
+
+        if ((start_conns[0] && cur_conns[0] - '0' == i) ||
+            (start_conns[0] && cur_conns[1] - '0' == i)) {
+            ui->cx = x;
+            ui->cy = y;
+            return UI_UPDATE;
+        }
 
         int new_pos = y * w + x;
         char* new_conns = state->conn_pairs + 2 * new_pos;
@@ -1112,8 +1126,6 @@ static void game_redraw(drawing* dr,
                 by = (b / w + 0.5) * ds->tilesize + BORDER,
                 color = state->start_pairs[i] ? COL_OUTLINE : COL_PATH;
 
-            /* I could draw a full line, but drawing only half helps with
-             * debugging (if we enter invalid state because of a bug) */
             draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, color);
 
             if (i % 2 == 0 &&

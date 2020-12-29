@@ -232,54 +232,78 @@ void connect_ends(int* opposite_ends, int a, int b) {
         opposite_ends[b] = -1;
 }
 
+/* unique_solution() uses a recursive algorithm to backtrack. This holds the
+ * state for each function call. */
+struct unique_solution_ctx {
+    /* Which knights moves are valid to make from each cell */
+    bool* can_connect;
+    /* Which moves are part of the tour, aka the solution */
+    bool* connected;
+    /* A dictionary mapping endpoints of disjoint paths */
+    int* opposite_ends;
+    /* Precomputed neighbors of cells */
+    int* neighbors;
+    /* Which cells of the grid have yet to be restricted, i.e. which cells
+     * have connections that (might) be disqualified */
+    tdq* todo;
+
+    /* Index of connected and can_connect that are permanent */
+    int* permanent_conns;
+    /* Recursion depth and lenof(permanent_conns) */
+    int depth;
+};
+
 /* Modify gs in-place to give a unique solution. guaranteed is whether a
  * solution is guaranteed to exist, i.e. did we generate the puzzle or was
  * it user input. */
-game_state* unique_solution(game_state* gs, bool guaranteed) {
+bool unique_solution(game_state* gs,
+                     bool guaranteed,
+                     struct unique_solution_ctx* ctx) {
     int w = gs->w, h = gs->h;
-
-    /* Which cells of the grid have yet to be restricted, i.e. which cells
-     * have connections that (might) be disqualified */
-    tdq* todo = tdq_new(w * h);
-    tdq_fill(todo);
-    /* Opposite endpoints of disjoint paths */
-    int* opposite_ends = snewn(w * h + 2, int);
-    /* Which knights moves are valid to make from each cell */
-    bool* can_connect = snewn(8 * w * h, bool);
-    /* Which moves are part of the tour, aka the solution */
-    bool* connected = snewn(8 * w * h, bool);
-    /* Precomputed neighbors of cells */
-    int* neighbors = snewn(8 * w * h, int);
-
     int i, j;
-    for (i = 0; i < w * h; i++) {
-        opposite_ends[i] = gs->grid[i] ? i : -1;
+    bool final_answer = false;
 
-        for (j = 0; j < 8; j++) {
-            neighbors[8 * i + j] = attempt_move(i, knight_moves[j], w, h);
-            can_connect[8 * i + j] =
-                neighbors[8 * i + j] > -1 && gs->grid[i] > 0;
-            connected[8 * i + j] = false;
+    if (!ctx) {
+        ctx = snew(struct unique_solution_ctx);
+        ctx->opposite_ends = snewn(w * h + 2, int);
+        ctx->can_connect = snewn(8 * w * h, bool);
+        ctx->connected = snewn(8 * w * h, bool);
+        ctx->permanent_conns = NULL;
+        ctx->depth = 0;
+        ctx->neighbors = snewn(8 * w * h, int);
+        ctx->todo = tdq_new(w * h);
+        tdq_fill(ctx->todo);
+
+        for (i = 0; i < w * h; i++) {
+            ctx->opposite_ends[i] = gs->grid[i] ? i : -1;
+
+            for (j = 0; j < 8; j++) {
+                ctx->neighbors[8 * i + j] =
+                    attempt_move(i, knight_moves[j], w, h);
+                ctx->can_connect[8 * i + j] =
+                    ctx->neighbors[8 * i + j] > -1 && gs->grid[i] > 0;
+                ctx->connected[8 * i + j] = false;
+            }
         }
+        ctx->opposite_ends[w * h] = w * h;
+        ctx->opposite_ends[w * h + 1] = w * h + 1;
+        connect_ends(ctx->opposite_ends, gs->ends[0], w * h);
+        connect_ends(ctx->opposite_ends, gs->ends[1], w * h + 1);
     }
-    opposite_ends[w * h] = w * h;
-    opposite_ends[w * h + 1] = w * h + 1;
-    connect_ends(opposite_ends, gs->ends[0], w * h);
-    connect_ends(opposite_ends, gs->ends[1], w * h + 1);
 
-    int pos = tdq_remove(todo);
+    int pos = tdq_remove(ctx->todo);
     while (pos > -1) {
         if (!gs->grid[pos]) {
-            pos = tdq_remove(todo);
+            pos = tdq_remove(ctx->todo);
             continue;
         }
 
-        int* neigh = neighbors + 8 * pos;
-        bool* ccon = can_connect + 8 * pos;
+        int* neigh = ctx->neighbors + 8 * pos;
+        bool* ccon = ctx->can_connect + 8 * pos;
         for (i = 0; i < 8; i++)
-            if (ccon[i] && !connected[8 * pos + i] &&
-                (opposite_ends[neigh[i]] == pos ||
-                 opposite_ends[neigh[i]] == -1))
+            if (ccon[i] && !ctx->connected[8 * pos + i] &&
+                (ctx->opposite_ends[neigh[i]] == pos ||
+                 ctx->opposite_ends[neigh[i]] == -1))
                 ccon[i] = false;
 
         int even = ccon[0] + ccon[2] + ccon[4] + ccon[6];
@@ -287,62 +311,64 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
 
         if (gs->grid[pos] != 1 &&
             ((gs->grid[pos] == 2 && even == 1 && odd == 1) ||
-             (gs->grid[pos] == 3 && (!even || !odd)) || even + odd < 2))
-            /* No solution */
-            assert(false);
+             (gs->grid[pos] == 3 && (!even || !odd)) || even + odd < 2)) {
+            final_answer = false;
+            goto cleanup_and_return;
+        }
 
-        if (opposite_ends[pos] != pos && opposite_ends[pos] > -1 &&
+        if (ctx->opposite_ends[pos] != pos && ctx->opposite_ends[pos] > -1 &&
             gs->grid[pos] == 1) {
             if (even + odd == 1)
                 for (i = 0; i < 8; i++)
                     if (ccon[i]) {
-                        connected[8 * pos + i] = true;
-                        connected[8 * neigh[i] + (i + 4) % 8] = true;
-                        connect_ends(opposite_ends, pos, neigh[i]);
+                        ctx->connected[8 * pos + i] = true;
+                        ctx->connected[8 * neigh[i] + (i + 4) % 8] = true;
+                        connect_ends(ctx->opposite_ends, pos, neigh[i]);
                     }
 
-        } else if (opposite_ends[pos] == pos && gs->grid[pos] == 2) {
+        } else if (ctx->opposite_ends[pos] == pos && gs->grid[pos] == 2) {
             int min = min(even, odd), max = max(even, odd);
             if (min < 2 && max == 2) {
                 int even_is_min = even == min;
                 for (i = 0; i < 8; i++) {
-                    stdq_add(todo, neigh[i]);
+                    stdq_add(ctx->todo, neigh[i]);
                     if (ccon[i] && i % 2 == even_is_min) {
-                        connected[8 * pos + i] = true;
-                        connected[8 * neigh[i] + (i + 4) % 8] = true;
-                        connect_ends(opposite_ends, pos, neigh[i]);
+                        ctx->connected[8 * pos + i] = true;
+                        ctx->connected[8 * neigh[i] + (i + 4) % 8] = true;
+                        connect_ends(ctx->opposite_ends, pos, neigh[i]);
                     } else if (ccon[i] && i % 2 != even_is_min) {
-                        can_connect[8 * pos + i] = false;
-                        can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                        ctx->can_connect[8 * pos + i] = false;
+                        ctx->can_connect[8 * neigh[i] + (i + 4) % 8] = false;
                     }
                 }
             } else if (min == 1) {
                 for (i = (min == odd); i < 8; i += 2)
                     if (ccon[i]) {
-                        can_connect[8 * pos + i] = false;
-                        can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-                        stdq_add(todo, neigh[i]);
+                        ctx->can_connect[8 * pos + i] = false;
+                        ctx->can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                        stdq_add(ctx->todo, neigh[i]);
                     }
             }
 
-        } else if (opposite_ends[pos] == pos && gs->grid[pos] == 3) {
+        } else if (ctx->opposite_ends[pos] == pos && gs->grid[pos] == 3) {
             int even_odd[2] = {even, odd};
             for (j = 0; j < 2; j++)
                 if (even_odd[j] == 1) {
                     for (i = j; i < 8; i += 2) {
-                        stdq_add(todo, neigh[i]);
+                        stdq_add(ctx->todo, neigh[i]);
                         if (ccon[i]) {
-                            connected[8 * pos + i] = true;
-                            connected[8 * neigh[i] + (i + 4) % 8] = true;
-                            connect_ends(opposite_ends, pos, neigh[i]);
+                            ctx->connected[8 * pos + i] = true;
+                            ctx->connected[8 * neigh[i] + (i + 4) % 8] = true;
+                            connect_ends(ctx->opposite_ends, pos, neigh[i]);
                         }
                     }
                 }
 
-        } else if (opposite_ends[pos] != pos && opposite_ends[pos] > -1) {
+        } else if (ctx->opposite_ends[pos] != pos &&
+                   ctx->opposite_ends[pos] > -1) {
             int which = 8;
             for (i = 0; i < 8; i++)
-                if (connected[8 * pos + i]) {
+                if (ctx->connected[8 * pos + i]) {
                     which = i;
                     break;
                 }
@@ -354,49 +380,126 @@ game_state* unique_solution(game_state* gs, bool guaranteed) {
                 if (!ccon[i] || i == which)
                     continue;
                 else if (odd_or_even != i % 2) {
-                    can_connect[8 * pos + i] = false;
-                    can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-                    stdq_add(todo, neigh[i]);
+                    ctx->can_connect[8 * pos + i] = false;
+                    ctx->can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                    stdq_add(ctx->todo, neigh[i]);
                 } else if (even + odd == 2 && odd_or_even == i % 2) {
-                    connected[8 * pos + i] = true;
-                    connected[8 * neigh[i] + (i + 4) % 8] = true;
-                    connect_ends(opposite_ends, pos, neigh[i]);
-                    stdq_add(todo, neigh[i]);
+                    ctx->connected[8 * pos + i] = true;
+                    ctx->connected[8 * neigh[i] + (i + 4) % 8] = true;
+                    connect_ends(ctx->opposite_ends, pos, neigh[i]);
+                    stdq_add(ctx->todo, neigh[i]);
                 }
             }
         }
 
-        if (opposite_ends[pos] == -1) {
+        if (ctx->opposite_ends[pos] == -1) {
             for (i = 0; i < 8; i++)
-                if (ccon[i] && !connected[8 * pos + i]) {
-                    can_connect[8 * pos + i] = false;
-                    can_connect[8 * neigh[i] + (i + 4) % 8] = false;
-                    stdq_add(todo, neigh[i]);
+                if (ccon[i] && !ctx->connected[8 * pos + i]) {
+                    ctx->can_connect[8 * pos + i] = false;
+                    ctx->can_connect[8 * neigh[i] + (i + 4) % 8] = false;
+                    stdq_add(ctx->todo, neigh[i]);
                 }
         }
 
-        pos = tdq_remove(todo);
+        pos = tdq_remove(ctx->todo);
     }
 
-    for (pos = 0; pos < w * h; pos++) {
-        if (opposite_ends[pos] != -1) {
-            printf("%d\n", pos);
+    /* Change this to start at a random position for variability. Add a
+     * random_state to ctx. */
+    for (pos = 0; pos < w * h; pos++)
+        if (ctx->opposite_ends[pos] != -1)
+            break;
+
+    if (pos == w * h) {
+        /* All cells are part of the tour.
+         * This is a uniquely solvable puzzle! */
+        final_answer = true;
+        if (guaranteed) {
+            for (i = 0; i < ctx->depth; i++) {
+                int perm = ctx->permanent_conns[i];
+                int pos = perm / 8, move = perm % 8;
+                int index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
+
+                gs->conn_pairs[index] = move + '0';
+                gs->start_pairs[index] = true;
+
+                pos = pos + knight_moves[move].y * w + knight_moves[move].x;
+                move = (move + 4) % 8;
+                index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
+
+                gs->conn_pairs[index] = move + '0';
+                gs->start_pairs[index] = true;
+            }
         }
-        int j;
-        for (j = 0; j < 8; j++)
-            if (connected[8 * i + j])
-                gs->conn_pairs[2 * i + (gs->conn_pairs[2 * i] != '8')] =
-                    j + '0';
+        goto cleanup_and_return;
     }
 
-    sfree(connected);
-    sfree(opposite_ends);
-    sfree(can_connect);
-    tdq_free(todo);
-    return gs;
+    int index, *neigh = ctx->neighbors + 8 * pos;
+    for (index = 0; index < 8; index++) {
+        if (!ctx->can_connect[8 * pos + index] ||
+            ctx->connected[8 * pos + index])
+            continue;
 
-#undef CONNECT
-#undef PREVENT
+        /* Duplicate ctx for recursive call */
+        struct unique_solution_ctx* new_ctx = snew(struct unique_solution_ctx);
+        new_ctx->opposite_ends = snewn(w * h + 2, int);
+        new_ctx->can_connect = snewn(8 * w * h, bool);
+        new_ctx->connected = snewn(8 * w * h, bool);
+        new_ctx->depth = ctx->depth + 1;
+        new_ctx->permanent_conns = snewn(new_ctx->depth, int);
+        new_ctx->neighbors = ctx->neighbors;
+        new_ctx->todo = tdq_new(w * h);
+
+        for (i = 0; i < w * h; i++) {
+            new_ctx->opposite_ends[i] = ctx->opposite_ends[i];
+
+            for (j = 0; j < 8; j++) {
+                new_ctx->can_connect[8 * i + j] = ctx->can_connect[8 * i + j];
+                new_ctx->connected[8 * i + j] = ctx->connected[8 * i + j];
+            }
+        }
+        new_ctx->opposite_ends[w * h] = ctx->opposite_ends[w * h];
+        new_ctx->opposite_ends[w * h + 1] = ctx->opposite_ends[w * h + 1];
+
+        for (i = 0; i < new_ctx->depth - 1; i++)
+            new_ctx->permanent_conns[i] = ctx->permanent_conns[i];
+
+        /* Assume a connection and check if solvable */
+        new_ctx->connected[8 * pos + index] = true;
+        new_ctx->connected[8 * neigh[index] + (index + 4) % 8] = true;
+        connect_ends(new_ctx->opposite_ends, pos, neigh[index]);
+        new_ctx->permanent_conns[new_ctx->depth - 1] = 8 * pos + index;
+
+        for (i = (index + gs->grid[pos] + 1) % 2; i < 8; i += 2)
+            if (i != index && new_ctx->can_connect[8 * pos + i])
+                new_ctx->can_connect[8 * pos + i] = false;
+        for (i = (index + gs->grid[neigh[index]] + 1) % 2; i < 8; i += 2)
+            if (i != (index + 4) % 8 &&
+                new_ctx->can_connect[8 * neigh[index] + i])
+                new_ctx->can_connect[8 * neigh[index] + i] = false;
+
+        for (i = 0; i < 8; i++) {
+            stdq_add(new_ctx->todo, neigh[i]);
+            stdq_add(new_ctx->todo, new_ctx->neighbors[8 * neigh[index] + i]);
+        }
+
+        final_answer = unique_solution(gs, guaranteed, new_ctx);
+
+        if (final_answer)
+            break;
+    }
+
+cleanup_and_return:
+
+    sfree(ctx->connected);
+    sfree(ctx->opposite_ends);
+    sfree(ctx->can_connect);
+    sfree(ctx->permanent_conns);
+    tdq_free(ctx->todo);
+    if (ctx->depth == 0)
+        sfree(ctx->neighbors);
+    sfree(ctx);
+    return final_answer;
 }
 
 static char* new_game_desc(const game_params* params,
@@ -406,7 +509,7 @@ static char* new_game_desc(const game_params* params,
     int w = params->w, h = params->h;
     assert(w > 5 && h > 5);
     struct game_state* gs;
-    rs = random_new("123456", 6);
+    rs = random_new("123455", 6);
 
 generate_grid:
     gs = init_game_state(w, h);
@@ -453,6 +556,7 @@ generate_grid:
             /* Warnsdorff heuristic failed or a tour is impossible, restart
              */
             free_game(gs);
+            sfree(moves);
             goto generate_grid;
         }
 
@@ -467,7 +571,7 @@ generate_grid:
 
     gs->ends[1] = pos;
 
-    unique_solution(gs, true);
+    unique_solution(gs, true, NULL);
 
     /* ==== Convert to string ==== */
     char *string = snewn(6 * w * h, char), *p = string;
@@ -484,10 +588,9 @@ generate_grid:
         }
     }
 
-    printf("%d,%d\n", gs->ends[0], gs->ends[1]);
-
     *(--p) = '\0'; /* Replace last period with null character */
     free_game(gs);
+    sfree(moves);
     return string;
 }
 
@@ -498,7 +601,7 @@ static const char* validate_desc(const game_params* params, const char* desc) {
 static game_state* new_game(midend* me,
                             const game_params* params,
                             const char* desc) {
-    char* p = dupstr(desc);
+    char *p = dupstr(desc), *desc_copy = p;
     int w = params->w, h = params->h;
     game_state* gs = init_game_state(w, h);
 
@@ -524,6 +627,7 @@ static game_state* new_game(midend* me,
         while (isdigit(*(++p)))
             ;
     }
+    sfree(desc_copy);
     return gs;
 }
 
@@ -605,8 +709,12 @@ static void game_changed_state(game_ui* ui,
             newstate->conn_pairs + 2 * (ui->cy * newstate->w + ui->cx);
         if (conns[0] < '8' && conns[1] < '8')
             ui->show_dests = 0;
-    } else
-        ui->show_dests = 0;
+    } else {
+        if (ui->show_dests == 1)
+            ui->visible = false;
+        else
+            ui->show_dests = 0;
+    }
 }
 
 struct game_drawstate {
@@ -787,7 +895,7 @@ static char* interpret_move(const game_state* state,
 static game_state* execute_move(const game_state* state, const char* move) {
     int size = state->w * state->h;
     game_state* gs = dup_game(state);
-    char* s = dupstr(move);
+    char *s = dupstr(move), *move_copy = s;
     int dx = *s - '0' - 2, dy = *(++s) - '0' - 2, pos = atoi(++s);
     if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2 || pos < 0 ||
         pos >= size) {
@@ -821,6 +929,7 @@ static game_state* execute_move(const game_state* state, const char* move) {
     gs->cx = pos % gs->w;
     gs->cy = pos / gs->w;
 
+    sfree(move_copy);
     return gs;
 }
 
@@ -946,10 +1055,14 @@ static void game_redraw(drawing* dr,
             /* Find all possible moves */
             for (i = 0; i < 8; i++) {
                 int new = attempt_move(cur_pos, knight_moves[i], w, h);
+                if (new == -1) {
+                    dest[i] = -1;
+                    continue;
+                }
                 char* new_conns = state->conn_pairs + 2 * new;
                 bool new_filled = new_conns[0] < '8' && new_conns[1] < '8';
 
-                if (new == -1 || !state->grid[cur_pos] || !state->grid[new])
+                if (!state->grid[cur_pos] || !state->grid[new])
                     dest[i] = -1;
                 else if (cur_filled || new_filled)
                     dest[i] = -1;
@@ -992,11 +1105,12 @@ static void game_redraw(drawing* dr,
             int ax = (a % w + 0.5) * ds->tilesize + BORDER,
                 ay = (a / w + 0.5) * ds->tilesize + BORDER,
                 bx = (b % w + 0.5) * ds->tilesize + BORDER,
-                by = (b / w + 0.5) * ds->tilesize + BORDER;
+                by = (b / w + 0.5) * ds->tilesize + BORDER,
+                color = state->start_pairs[i] ? COL_OUTLINE : COL_PATH;
 
             /* I could draw a full line, but drawing only half helps with
              * debugging (if we enter invalid state because of a bug) */
-            draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, COL_PATH);
+            draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, color);
 
             if (i % 2 == 0 &&
                 ((state->conn_pairs[i] < '8' &&

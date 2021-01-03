@@ -10,6 +10,10 @@
 #define BORDER 10
 #define PREFERRED_TILE_SIZE 30
 
+#define NO_MOD(pos) pos & ~(MOD_LOOP | MOD_ANGLE)
+#define MOD_LOOP 8
+#define MOD_ANGLE 16
+
 struct pair {
     int a;
     int b;
@@ -34,8 +38,6 @@ typedef struct point point;
 static const point knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
                                       {1, 2},   {-1, 2},  {-2, 1},
                                       {-2, -1}, {-1, -2}, {0, 0}};
-
-/* FIXME: Didn't realize combi.c existed. Can I replace this with that? */
 
 /* (Almost) all combinations of choosing 2 of 9 ints, i.e. 9 choose 2.
  * The values are indexes of knight_moves in and out of the cell.
@@ -80,6 +82,19 @@ struct game_state {
 
     /* Flags for if a conn_pairs was included in the puzzle hints */
     bool* start_pairs;
+
+    /*
+     * A mapping for opposite endpoints of disjoint paths. Used for
+     * detecting loops or if the board is finished. Each item is:
+     *   i: if the value is its own index i, it is not part of a path
+     *  -1: An unvisited cell or part of a path
+     *  -2: A cell that has an error: has an incorrect angle or is
+     *      part of a loop
+     * a,b: Any other value is the opposite endpoint of the path.
+     *      This means a cannot connect to b if a == opposite_ends[b]
+     *      if i >= 0, then opposite_ends[opposite_ends[i]] == i
+     */
+    int* opposite_ends;
 
     /* The ending cursor position after the last move. Used to update
      * game_ui */
@@ -176,14 +191,18 @@ game_state* init_game_state(int w, int h) {
     gs->ncells = w * h;
     /* FIXME: should I convert gs->grid to be a string? */
     gs->grid = snewn(w * h, int);
+    gs->opposite_ends = snewn(w * h + 2, int);
     gs->conn_pairs = snewn(2 * w * h, char);
     gs->start_pairs = snewn(2 * w * h, bool);
     int i;
     for (i = 0; i < w * h; i++) {
         gs->grid[i] = 0;
+        gs->opposite_ends[i] = i;
         gs->conn_pairs[2 * i] = gs->conn_pairs[2 * i + 1] = '8';
         gs->start_pairs[2 * i] = gs->start_pairs[2 * i + 1] = false;
     }
+    gs->opposite_ends[i] = i;
+    gs->opposite_ends[i + 1] = i + 1;
 
     return gs;
 }
@@ -191,6 +210,7 @@ game_state* init_game_state(int w, int h) {
 static void free_game(game_state* state) {
     if (state) {
         sfree(state->grid);
+        sfree(state->opposite_ends);
         sfree(state->conn_pairs);
         sfree(state->start_pairs);
         sfree(state);
@@ -198,6 +218,7 @@ static void free_game(game_state* state) {
 }
 
 /*
+ * FIXME: Remove this?
  * Remove pairs of numbers where neither are equal to required
  * and shift the remaining pairs to the beginning of the array.
  * Additionally, synchronize sync_index to point to the same pair
@@ -404,7 +425,7 @@ bool unique_solution(game_state* gs,
         pos = tdq_remove(ctx->todo);
     }
 
-    /* Change this to start at a random position for variability. Add a
+    /* FIXME: Change this to start at a random position for variability. Add a
      * random_state to ctx. */
     for (pos = 0; pos < w * h; pos++)
         if (ctx->opposite_ends[pos] != -1)
@@ -417,7 +438,7 @@ bool unique_solution(game_state* gs,
         if (guaranteed) {
             for (i = 0; i < ctx->depth; i++) {
                 int perm = ctx->permanent_conns[i];
-                int pos = perm / 8, move = perm % 8;
+                int pos = perm / 8, move = perm % 8, start = pos;
                 int index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
 
                 gs->conn_pairs[index] = move + '0';
@@ -427,7 +448,12 @@ bool unique_solution(game_state* gs,
                 index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
 
                 gs->conn_pairs[index] = move + '0';
+
+                connect_ends(gs->opposite_ends, start, pos);
             }
+        } else {
+            /* FIXME: The user wants their grid solved. Encode
+             * the whole solved gamestate. */
         }
         goto cleanup_and_return;
     }
@@ -612,25 +638,30 @@ static game_state* new_game(midend* me,
             gs->ends[gs->ends > 0 ? 1 : 0] = i;
         } else if (c == 0) {
             gs->nunvisited++;
+            gs->opposite_ends[i] = -1;
         }
     }
     gs->ncells = w * h - gs->nunvisited;
 
     while (*p) {
-        int i = *(++p) - '0', pos = atoi(++p),
-            index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
+        int i = *(++p) - '0', pos = atoi(++p);
+        int index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
         gs->conn_pairs[index] = i + '0';
         gs->start_pairs[index] = true;
 
+        int start = pos;
         pos = pos + knight_moves[i].y * w + knight_moves[i].x;
         index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
 
         gs->conn_pairs[index] = (i + 4) % 8 + '0';
         gs->start_pairs[index] = true;
 
+        connect_ends(gs->opposite_ends, start, pos);
+
         while (isdigit(*(++p)))
             ;
     }
+
     sfree(desc_copy);
     return gs;
 }
@@ -647,6 +678,7 @@ static game_state* dup_game(const game_state* state) {
     int i;
     for (i = 0; i < ret->w * ret->h; i++) {
         ret->grid[i] = state->grid[i];
+        ret->opposite_ends[i] = state->opposite_ends[i];
         ret->conn_pairs[2 * i] = state->conn_pairs[2 * i];
         ret->conn_pairs[2 * i + 1] = state->conn_pairs[2 * i + 1];
         ret->start_pairs[2 * i] = state->start_pairs[2 * i];
@@ -777,9 +809,9 @@ static char* interpret_move(const game_state* state,
         ui->show_dests = 1;
 
         int dx = x - ui->cx, dy = y - ui->cy;
-        /* Not a knights move away, change position instead of making a move
-         */
         if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
+            /* Not a knights move away, change position
+             * instead of making a move */
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;
@@ -793,7 +825,7 @@ static char* interpret_move(const game_state* state,
         bool* start_conns = state->start_pairs + 2 * cur_pos;
 
         if ((start_conns[0] && cur_conns[0] - '0' == i) ||
-            (start_conns[0] && cur_conns[1] - '0' == i)) {
+            (start_conns[1] && cur_conns[1] - '0' == i)) {
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;
@@ -923,25 +955,86 @@ static game_state* execute_move(const game_state* state, const char* move) {
     /* This ugly formula finds the index i of {dx, dy} in knight_moves */
     int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
+    int start = pos;
     char* conns = gs->conn_pairs + 2 * pos;
-    if ((conns[0] < '8' && i == conns[0] - '0') ||
-        (conns[1] < '8' && i == conns[1] - '0')) {
+    if (i == conns[0] - '0' || i == conns[1] - '0') {
         /* The user is backtracking, remove connection */
         conns[i == conns[1] - '0'] = '8';
         pos = pos + dy * gs->w + dx;
         conns = gs->conn_pairs + 2 * pos;
         conns[(i + 4) % 8 == conns[1] - '0'] = '8';
+
+        if (gs->opposite_ends[start] == -2 && gs->opposite_ends[pos] == -2) {
+            /* This might be disconnecting a loop. Traverse connections once to
+             * confirm it is a loop and not a bunch of connections at the wrong
+             * angle. Then, if it is, loop again and set other connections to -1
+             * instead of -2 (unless it is at the wrong angle). */
+            int original_pos = pos, original_i = i;
+            int num_edges = 0;
+            while (pos != start) {
+                i = (conns[0] - '0' == i ? conns[1] : conns[0]) - '0';
+                pos = pos + knight_moves[i].y * gs->w + knight_moves[i].x;
+                conns = gs->conn_pairs + 2 * pos;
+                i = (i + 4) % 8;
+                num_edges++;
+                if (gs->opposite_ends[pos] >= 0)
+                    break;
+            }
+
+            if (pos == start) {
+                /* This does break up a loop. Remove error marks from cells. */
+                i = original_i;
+                pos = original_pos;
+                conns = gs->conn_pairs + 2 * pos;
+                while (num_edges > 1) {
+                    i = (conns[0] - '0' == i ? conns[1] : conns[0]) - '0';
+                    pos = pos + knight_moves[i].y * gs->w + knight_moves[i].x;
+                    conns = gs->conn_pairs + 2 * pos;
+                    i = (i + 4) % 8;
+                    num_edges--;
+                    if ((conns[0] + conns[1] + gs->grid[pos]) % 2 == 0)
+                        gs->opposite_ends[pos] = -1;
+                }
+            }
+            pos = original_pos;
+        }
+
+        if (gs->opposite_ends[start] < 0)
+            gs->opposite_ends[start] = start;
+        if (gs->opposite_ends[pos] < 0)
+            gs->opposite_ends[pos] = pos;
+        connect_ends(gs->opposite_ends, start, pos);
     } else {
         conns[conns[0] < '8'] = i + '0';
 
         pos = pos + dy * gs->w + dx;
         conns = gs->conn_pairs + 2 * pos;
         i = (i + 4) % 8;
+        conns[conns[0] < '8'] = i + '0';
 
-        if (conns[0] == '8' || conns[1] == '8')
-            /* FIXME: should landing on a visited cell be disallowed or
-             * allowed but highlighted in red? */
-            conns[conns[0] < '8'] = i + '0';
+        if (gs->opposite_ends[start] == pos) {
+            /* Created a loop, mark each endpoint as -2 */
+            gs->opposite_ends[start] = -2;
+            gs->opposite_ends[pos] = -2;
+            while (pos != start) {
+                i = (conns[0] - '0' == i ? conns[1] : conns[0]) - '0';
+                pos = pos + knight_moves[i].y * gs->w + knight_moves[i].x;
+                conns = gs->conn_pairs + 2 * pos;
+                i = (i + 4) % 8;
+                gs->opposite_ends[pos] = -2;
+            }
+        } else {
+            connect_ends(gs->opposite_ends, start, pos);
+
+            if (gs->opposite_ends[pos] == -1 &&
+                (conns[0] + conns[1] + gs->grid[pos]) % 2 == 1)
+                gs->opposite_ends[pos] = -2;
+
+            conns = gs->conn_pairs + 2 * start;
+            if (gs->opposite_ends[start] == -1 &&
+                (conns[0] + conns[1] + gs->grid[start]) % 2 == 1)
+                gs->opposite_ends[start] = -2;
+        }
     }
 
     gs->cx = pos % gs->w;
@@ -957,9 +1050,9 @@ enum {
     COL_BACKGROUND,
     COL_OUTLINE,
     COL_PATH,
-    COL_HIGHLIGHT,
     COL_SELECTED,
-    NCOLOURS
+    COL_ERROR,
+    NCOLOURS,
 };
 
 static void game_compute_size(const game_params* params,
@@ -982,21 +1075,21 @@ static float* game_colours(frontend* fe, int* ncolours) {
 
     frontend_default_colour(fe, &ret[COL_BACKGROUND * 3]);
 
-    ret[COL_OUTLINE * 3 + 0] = 0.5F;
-    ret[COL_OUTLINE * 3 + 1] = 0.5F;
-    ret[COL_OUTLINE * 3 + 2] = 0.5F;
+    ret[COL_OUTLINE * 3 + 0] = 0.5;
+    ret[COL_OUTLINE * 3 + 1] = 0.5;
+    ret[COL_OUTLINE * 3 + 2] = 0.5;
 
-    ret[COL_PATH * 3 + 0] = 0.0F;
-    ret[COL_PATH * 3 + 1] = 0.0F;
-    ret[COL_PATH * 3 + 2] = 0.0F;
+    ret[COL_PATH * 3 + 0] = 0.0;
+    ret[COL_PATH * 3 + 1] = 0.0;
+    ret[COL_PATH * 3 + 2] = 0.0;
 
-    ret[COL_HIGHLIGHT * 3 + 0] = ret[COL_BACKGROUND * 3] * 0.8;
-    ret[COL_HIGHLIGHT * 3 + 1] = ret[COL_BACKGROUND * 3 + 1] * 0.8;
-    ret[COL_HIGHLIGHT * 3 + 2] = ret[COL_BACKGROUND * 3 + 2] * 1.2;
+    ret[COL_SELECTED * 3 + 0] = 0.4;
+    ret[COL_SELECTED * 3 + 1] = 0.4;
+    ret[COL_SELECTED * 3 + 2] = 1.0;
 
-    ret[COL_SELECTED * 3 + 0] = ret[COL_BACKGROUND * 3] * 0.6;
-    ret[COL_SELECTED * 3 + 1] = ret[COL_BACKGROUND * 3 + 1] * 0.6;
-    ret[COL_SELECTED * 3 + 2] = ret[COL_BACKGROUND * 3 + 2] * 1.3;
+    ret[COL_ERROR * 3 + 0] = 1.0;
+    ret[COL_ERROR * 3 + 1] = 0.2;
+    ret[COL_ERROR * 3 + 2] = 0.2;
 
     *ncolours = NCOLOURS;
     return ret;
@@ -1115,25 +1208,40 @@ static void game_redraw(drawing* dr,
 
     /* Tour path */
     for (i = 0; i < 2 * w * h; i++) {
-        char c = state->conn_pairs[i];
-        if (c != '8') {
-            point move = knight_moves[c - '0'];
+        if (state->conn_pairs[i] != '8') {
+            point move = knight_moves[state->conn_pairs[i] - '0'];
             int a = i / 2, b = a + move.y * w + move.x;
 
             int ax = (a % w + 0.5) * ds->tilesize + BORDER,
                 ay = (a / w + 0.5) * ds->tilesize + BORDER,
                 bx = (b % w + 0.5) * ds->tilesize + BORDER,
                 by = (b / w + 0.5) * ds->tilesize + BORDER,
-                color = state->start_pairs[i] ? COL_OUTLINE : COL_PATH;
+                color = (state->opposite_ends[i / 2] == -2
+                             ? COL_ERROR
+                             : state->start_pairs[i] ? COL_OUTLINE : COL_PATH),
+                dx = bx - ax, dy = by - ay;
 
-            draw_line(dr, ax, ay, (ax + bx) / 2, (ay + by) / 2, color);
+            draw_line(dr, ax, ay, bx - dx / 2, by - dy / 2, color);
 
-            if (i % 2 == 0 &&
-                ((state->conn_pairs[i] < '8' &&
-                  state->conn_pairs[i + 1] < '8') ||
-                 (state->grid[i / 2] == 1 &&
-                  state->conn_pairs[i] + state->conn_pairs[i + 1] < 2 * '8')))
-                draw_circle(dr, ax, ay, 0.1 * ds->tilesize, COL_PATH, COL_PATH);
+            if (i % 2 == 0 && state->opposite_ends[i / 2] < 0) {
+                draw_circle(dr, ax, ay, 0.1 * ds->tilesize, color, color);
+            }
+            /* if (i % 2 == 0 && state->opposite_ends[i / 2] == -1) {
+                char* conns = state->conn_pairs + i;
+
+                if (conns[0] < '8' && conns[1] < '8' &&
+                    (conns[0] + conns[1] + state->grid[i / 2]) % 2 != 0) {
+                FIXME:
+                    Not certain how to show this error to the user printf(
+                        "Incorrect connection at %d, %d!\n", (i / 2) % w,
+                        i / 2 / w);
+                }
+
+                if ((conns[0] < '8' && conns[1] < '8') ||
+                    (state->grid[i / 2] == 1 && conns[0] + conns[1] < 2 * '8'))
+                    draw_circle(dr, ax, ay, 0.1 * ds->tilesize, COL_PATH,
+                                COL_PATH);
+            } */
         }
     }
 

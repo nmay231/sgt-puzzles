@@ -57,7 +57,10 @@ struct game_params {
     int missing; */
 };
 
-static const struct game_params knight_presets[] = {{6, 6}, {7, 7}};
+static const struct game_params knight_presets[] = {{6, 6},
+                                                    {7, 7},
+                                                    {8, 8},
+                                                    {10, 8}};
 
 struct game_state {
     int w, h;       /* width, height */
@@ -104,7 +107,7 @@ struct game_state {
 static game_params* default_params(void) {
     game_params* ret = snew(game_params);
 
-    ret->w = ret->h = 7;
+    ret->w = ret->h = 6;
 
     return ret;
 }
@@ -533,7 +536,6 @@ static char* new_game_desc(const game_params* params,
     int w = params->w, h = params->h;
     assert(w > 5 && h > 5);
     struct game_state* gs;
-    rs = random_new("123455", 6);
 
 generate_grid:
     gs = init_game_state(w, h);
@@ -1216,34 +1218,23 @@ static void game_redraw(drawing* dr,
                 ay = (a / w + 0.5) * ds->tilesize + BORDER,
                 bx = (b % w + 0.5) * ds->tilesize + BORDER,
                 by = (b / w + 0.5) * ds->tilesize + BORDER,
-                color = (state->opposite_ends[i / 2] == -2
+                color = (state->opposite_ends[a] == -2
                              ? COL_ERROR
                              : state->start_pairs[i] ? COL_OUTLINE : COL_PATH),
                 dx = bx - ax, dy = by - ay;
 
             draw_line(dr, ax, ay, bx - dx / 2, by - dy / 2, color);
-
-            if (i % 2 == 0 && state->opposite_ends[i / 2] < 0) {
-                draw_circle(dr, ax, ay, 0.1 * ds->tilesize, color, color);
-            }
-            /* if (i % 2 == 0 && state->opposite_ends[i / 2] == -1) {
-                char* conns = state->conn_pairs + i;
-
-                if (conns[0] < '8' && conns[1] < '8' &&
-                    (conns[0] + conns[1] + state->grid[i / 2]) % 2 != 0) {
-                FIXME:
-                    Not certain how to show this error to the user printf(
-                        "Incorrect connection at %d, %d!\n", (i / 2) % w,
-                        i / 2 / w);
-                }
-
-                if ((conns[0] < '8' && conns[1] < '8') ||
-                    (state->grid[i / 2] == 1 && conns[0] + conns[1] < 2 * '8'))
-                    draw_circle(dr, ax, ay, 0.1 * ds->tilesize, COL_PATH,
-                                COL_PATH);
-            } */
         }
     }
+
+    /* Cell Bulbs */
+    for (i = 0; i < w * h; i++)
+        if (state->opposite_ends[i] < 0 && state->conn_pairs[2 * i] < '8') {
+            int color = state->opposite_ends[i] == -1 ? COL_PATH : COL_ERROR,
+                x = (i % w + 0.5) * ds->tilesize + BORDER,
+                y = (i / w + 0.5) * ds->tilesize + BORDER;
+            draw_circle(dr, x, y, 0.1 * ds->tilesize, COL_PATH, color);
+        }
 
     draw_update(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
                 h * ds->tilesize + 2 * BORDER);

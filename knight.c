@@ -7,6 +7,9 @@
 
 #include "puzzles.h"
 
+/* ======== Parameters ======== */
+#define MAX_UNVISITED (w + h)
+
 #define BORDER 10
 #define PREFERRED_TILE_SIZE 30
 
@@ -539,7 +542,7 @@ static char* new_game_desc(const game_params* params,
 
 generate_grid:
     gs = init_game_state(w, h);
-    gs->nunvisited = random_upto(rs, w + h);
+    gs->nunvisited = random_upto(rs, MAX_UNVISITED);
     gs->ends[0] = random_upto(rs, w * h);
     gs->ncells = w * h - gs->nunvisited;
 

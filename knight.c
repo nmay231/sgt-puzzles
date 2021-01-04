@@ -611,7 +611,7 @@ static const char* validate_desc(const game_params* params, const char* desc) {
 static game_state* new_game(midend* me,
                             const game_params* params,
                             const char* desc) {
-    char *p = dupstr(desc), *desc_copy = p;
+    const char* p = desc;
     int w = params->w, h = params->h;
     game_state* gs = init_game_state(w, h);
 
@@ -630,7 +630,8 @@ static game_state* new_game(midend* me,
     gs->ncells = w * h - gs->nunvisited;
 
     while (*p) {
-        int i = *(++p) - '0', pos = atoi(++p);
+        int i = *(++p) - '0', pos, n;
+        sscanf(++p, "%d%n", &pos, &n);
         int index = 2 * pos + (gs->conn_pairs[2 * pos] != '8');
         gs->conn_pairs[index] = i + '0';
         gs->start_pairs[index] = true;
@@ -644,11 +645,9 @@ static game_state* new_game(midend* me,
 
         connect_ends(gs->opposite_ends, start, pos);
 
-        while (isdigit(*(++p)))
-            ;
+        p += n;
     }
 
-    sfree(desc_copy);
     return gs;
 }
 
@@ -678,6 +677,7 @@ static char* solve_game(const game_state* state,
                         const game_state* currstate,
                         const char* aux,
                         const char** error) {
+    /* FIXME: Actually solve the game for the user. */
     char* solution = snewn(100, char);
     solution = dupstr("20.30");
     return solution;

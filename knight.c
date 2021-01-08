@@ -634,13 +634,17 @@ static game_state* new_game(midend* me,
         p++;
         gs->grid[i] = c;
         if (c == 1) {
-            gs->ends[gs->ends > 0 ? 1 : 0] = i;
+            gs->ends[gs->ends[0] > -1] = i;
         } else if (c == 0) {
             gs->nunvisited++;
             gs->opposite_ends[i] = -1;
         }
     }
     gs->ncells = w * h - gs->nunvisited;
+    gs->opposite_ends[w * h] = w * h;
+    gs->opposite_ends[w * h + 1] = w * h + 1;
+    connect_ends(gs->opposite_ends, w * h, gs->ends[0]);
+    connect_ends(gs->opposite_ends, w * h + 1, gs->ends[1]);
 
     while (*p) {
         int i = *(++p) - '0', pos, n;
@@ -668,13 +672,14 @@ static game_state* dup_game(const game_state* state) {
     game_state* ret = init_game_state(state->w, state->h);
     ret->w = state->w;
     ret->h = state->h;
+    int w = ret->w, h = ret->h;
     ret->ncells = state->ncells;
     ret->nunvisited = state->nunvisited;
     ret->ends[0] = state->ends[0];
     ret->ends[1] = state->ends[1];
 
     int i;
-    for (i = 0; i < ret->w * ret->h; i++) {
+    for (i = 0; i < w * h; i++) {
         ret->grid[i] = state->grid[i];
         ret->opposite_ends[i] = state->opposite_ends[i];
         ret->conn_pairs[2 * i] = state->conn_pairs[2 * i];
@@ -682,6 +687,8 @@ static game_state* dup_game(const game_state* state) {
         ret->start_pairs[2 * i] = state->start_pairs[2 * i];
         ret->start_pairs[2 * i + 1] = state->start_pairs[2 * i + 1];
     }
+    ret->opposite_ends[w * h] = state->opposite_ends[w * h];
+    ret->opposite_ends[w * h + 1] = state->opposite_ends[w * h + 1];
 
     return ret;
 }
@@ -821,10 +828,10 @@ static char* interpret_move(const game_state* state,
 
         int cur_pos = ui->cy * w + ui->cx;
         char* cur_conns = state->conn_pairs + 2 * cur_pos;
-        bool* start_conns = state->start_pairs + 2 * cur_pos;
+        bool* perm_conns = state->start_pairs + 2 * cur_pos;
 
-        if ((start_conns[0] && cur_conns[0] - '0' == i) ||
-            (start_conns[1] && cur_conns[1] - '0' == i)) {
+        if ((perm_conns[0] && cur_conns[0] - '0' == i) ||
+            (perm_conns[1] && cur_conns[1] - '0' == i)) {
             ui->cx = x;
             ui->cy = y;
             return UI_UPDATE;

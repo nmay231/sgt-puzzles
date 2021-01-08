@@ -223,8 +223,8 @@ static void free_game(game_state* state) {
     }
 }
 
-void stdq_add(tdq* tdq, int k, int max) {
-    if (0 <= k && k < max)
+void stdq_add(tdq* tdq, int k) {
+    if (0 <= k)
         tdq_add(tdq, k);
 }
 
@@ -318,7 +318,7 @@ bool unique_solution(game_state* gs,
                 (ctx->opposite_ends[neigh[i]] == pos ||
                  ctx->opposite_ends[neigh[i]] == -1)) {
                 set_bools(ctx->can_connect, ctx->neighbors, pos, i, false);
-                stdq_add(ctx->todo, neigh[i], w * h);
+                stdq_add(ctx->todo, neigh[i]);
             }
 
         int even = ccon[0] + ccon[2] + ccon[4] + ccon[6];
@@ -347,20 +347,22 @@ bool unique_solution(game_state* gs,
                     if (!ccon[i]) {
                         continue;
                     } else if (i % 2 == (even == min)) {
+                        if (ctx->opposite_ends[neigh[i]] < w * h)
+                            stdq_add(ctx->todo, ctx->opposite_ends[neigh[i]]);
                         set_bools(ctx->connected, ctx->neighbors, pos, i, true);
                         connect_ends(ctx->opposite_ends, pos, neigh[i]);
                     } else {
                         set_bools(ctx->can_connect, ctx->neighbors, pos, i,
                                   false);
                     }
-                    stdq_add(ctx->todo, neigh[i], w * h);
+                    stdq_add(ctx->todo, neigh[i]);
                 }
             } else if (min == 1) {
                 for (i = (min == odd); i < 8; i += 2)
                     if (ccon[i]) {
                         set_bools(ctx->can_connect, ctx->neighbors, pos, i,
                                   false);
-                        stdq_add(ctx->todo, neigh[i], w * h);
+                        stdq_add(ctx->todo, neigh[i]);
                         break;
                     }
             }
@@ -369,14 +371,15 @@ bool unique_solution(game_state* gs,
             int even_odd[2] = {even, odd};
             for (j = 0; j < 2; j++)
                 if (even_odd[j] == 1) {
-                    stdq_add(ctx->todo, pos, w * h);
+                    stdq_add(ctx->todo, pos);
                     for (i = j; i < 8; i += 2) {
-                        stdq_add(ctx->todo, neigh[i], w * h);
-                        if (ccon[i]) {
-                            set_bools(ctx->connected, ctx->neighbors, pos, i,
-                                      true);
-                            connect_ends(ctx->opposite_ends, pos, neigh[i]);
-                        }
+                        stdq_add(ctx->todo, neigh[i]);
+                        if (!ccon[i])
+                            continue;
+                        if (ctx->opposite_ends[neigh[i]] < w * h)
+                            stdq_add(ctx->todo, ctx->opposite_ends[neigh[i]]);
+                        set_bools(ctx->connected, ctx->neighbors, pos, i, true);
+                        connect_ends(ctx->opposite_ends, pos, neigh[i]);
                     }
                 }
 
@@ -399,16 +402,20 @@ bool unique_solution(game_state* gs,
                           even + odd > 2) ||
                          ctx->opposite_ends[neigh[i]] == -1) {
                     set_bools(ctx->can_connect, ctx->neighbors, pos, i, false);
-                    stdq_add(ctx->todo, neigh[i], w * h);
+                    stdq_add(ctx->todo, neigh[i]);
                     if (ctx->opposite_ends[pos] == neigh[i])
-                        stdq_add(ctx->todo, pos, w * h);
+                        stdq_add(ctx->todo, pos);
                 } else if (ctx->opposite_ends[pos] == neigh[i]) {
                     assert(even + odd == 2);
                     final_answer = false;
                     goto cleanup_and_return;
                 } else if (even + odd == 2) {
+                    if (ctx->opposite_ends[pos] < w * h)
+                        stdq_add(ctx->todo, ctx->opposite_ends[pos]);
+                    if (ctx->opposite_ends[neigh[i]] < w * h)
+                        stdq_add(ctx->todo, ctx->opposite_ends[neigh[i]]);
                     set_bools(ctx->connected, ctx->neighbors, pos, i, true);
-                    stdq_add(ctx->todo, neigh[i], w * h);
+                    stdq_add(ctx->todo, neigh[i]);
                     connect_ends(ctx->opposite_ends, pos, neigh[i]);
                 }
             }
@@ -418,7 +425,7 @@ bool unique_solution(game_state* gs,
             for (i = 0; i < 8; i++)
                 if (ccon[i] && !ctx->connected[8 * pos + i]) {
                     set_bools(ctx->can_connect, ctx->neighbors, pos, i, false);
-                    stdq_add(ctx->todo, neigh[i], w * h);
+                    stdq_add(ctx->todo, neigh[i]);
                 }
         }
 
@@ -490,30 +497,14 @@ bool unique_solution(game_state* gs,
             new_ctx->permanent_conns[i] = ctx->permanent_conns[i];
 
         /* Assume a connection and check if solvable */
-        stdq_add(new_ctx->todo, pos, w * h);
-        stdq_add(new_ctx->todo, neigh[i], w * h);
         set_bools(new_ctx->connected, new_ctx->neighbors, pos, index, true);
         connect_ends(new_ctx->opposite_ends, pos, neigh[index]);
         new_ctx->permanent_conns[new_ctx->ref_count - 1] = 8 * pos + index;
 
         int* neigh_neigh = new_ctx->neighbors + 8 * neigh[index];
         for (i = 0; i < 8; i++) {
-            stdq_add(new_ctx->todo, neigh[i], w * h);
-            stdq_add(new_ctx->todo, neigh_neigh[i], w * h);
-
-            if (new_ctx->can_connect[8 * pos + i] &&
-                !new_ctx->connected[8 * pos + i] &&
-                ((i + index + gs->grid[pos]) % 2 == 1 ||
-                 new_ctx->opposite_ends[neigh[i]] == -1))
-                set_bools(new_ctx->can_connect, new_ctx->neighbors, pos, i,
-                          false);
-
-            if (new_ctx->can_connect[8 * neigh[index] + i] &&
-                !new_ctx->connected[8 * neigh[index] + i] &&
-                ((i + index + gs->grid[neigh[index]]) % 2 == 1 ||
-                 new_ctx->opposite_ends[neigh_neigh[i]] == -1))
-                set_bools(new_ctx->can_connect, new_ctx->neighbors,
-                          neigh[index], i, false);
+            stdq_add(new_ctx->todo, neigh[i]);
+            stdq_add(new_ctx->todo, neigh_neigh[i]);
         }
 
         final_answer = unique_solution(gs, guaranteed, rs, new_ctx);

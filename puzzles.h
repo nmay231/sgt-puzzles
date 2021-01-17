@@ -602,6 +602,18 @@ bool findloop_is_bridge(
     struct findloopstate *pv, int u, int v, int *u_vertices, int *v_vertices);
 
 /*
+ * Hamilton-cycle and Hamilton-path finding apparatus in hamilton.c.
+ */
+struct hamilton {
+    unsigned *output_vertices;
+};
+struct hamilton *hamilton_cycle_new(unsigned nvertices, unsigned start_vertex);
+struct hamilton *hamilton_path_new(unsigned nvertices);
+void hamilton_free(struct hamilton *h);
+void hamilton_add_edge(struct hamilton *h, unsigned v1, unsigned v2);
+void hamilton_run(struct hamilton *h, random_state *rs);
+
+/*
  * Helper function to sort an array. Differs from standard qsort in
  * that it takes a context parameter that is passed to the compare
  * function.

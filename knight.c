@@ -13,10 +13,6 @@
 #define BORDER 10
 #define PREFERRED_TILE_SIZE 30
 
-#define NO_MOD(pos) pos & ~(MOD_LOOP | MOD_ANGLE)
-#define MOD_LOOP 8
-#define MOD_ANGLE 16
-
 struct pair {
     int a;
     int b;
@@ -41,6 +37,10 @@ typedef struct point point;
 static const point knight_moves[9] = {{1, -2},  {2, -1},  {2, 1},
                                       {1, 2},   {-1, 2},  {-2, 1},
                                       {-2, -1}, {-1, -2}, {0, 0}};
+
+/* This ugly formula finds the index i of {dx,dy} in knight_moves */
+#define DX_DY_TO_KNIGHT_INDEX(dx, dy) \
+    ((dx) > 0 ? 2 : 5) + ((dx) / abs((dx))) * ((dy) + ((dy) > 0 ? -1 : 0))
 
 /* (Almost) all combinations of choosing 2 of 9 ints, i.e. 9 choose 2.
  * The values are indexes of knight_moves in and out of the cell.
@@ -717,20 +717,28 @@ struct game_ui {
 
     /* 0=don't show destinations, 1,2,3=show destinations. Using 2 and 3
      * disambiguates the first move of a cell when using arrow key controls
-     * while 1 shows all. With 2 or 3, the moves shown are slanted left or
-     * right from the main axis. */
+     * while 1 shows all (mouse controls). With 2 or 3, the moves shown are
+     * slanted left or right from the vertical axis. */
     int show_dests;
+
+    /* A string containing all the moves of the drag currently in progress. */
+    char* drag_moves;
+    /* Handle dynamic array resizing. */
+    int moves_size, moves_buffered;
 };
 
 static game_ui* new_ui(const game_state* state) {
     game_ui* ui = snew(game_ui);
     ui->cx = ui->cy = 0;
     ui->visible = false;
-    ui->show_dests = 0;
+    ui->show_dests = ui->moves_size = 0;
+    ui->moves_buffered = 20;
+    ui->drag_moves = snewn(ui->moves_buffered, char);
     return ui;
 }
 
 static void free_ui(game_ui* ui) {
+    sfree(ui->drag_moves);
     sfree(ui);
 }
 
@@ -743,23 +751,12 @@ static void decode_ui(game_ui* ui, const char* encoding) {}
 static void game_changed_state(game_ui* ui,
                                const game_state* oldstate,
                                const game_state* newstate) {
-    if (0 <= newstate->cx && 0 <= newstate->cy) {
-        ui->visible = true;
+    /* FIXME: Update to use new game_ui */
+    if (0 <= newstate->cx && 0 <= newstate->cy && ui->visible) {
         ui->cx = newstate->cx;
         ui->cy = newstate->cy;
-        char* conns =
-            newstate->conn_pairs + 2 * (ui->cy * newstate->w + ui->cx);
-        if (conns[0] < '8' && conns[1] < '8') {
-            if (ui->show_dests == 1)
-                ui->visible = false;
-            else
-                ui->show_dests = 0;
-        }
     } else {
-        if (ui->show_dests == 1)
-            ui->visible = false;
-        else
-            ui->show_dests = 0;
+        ui->show_dests = 0;
     }
 }
 
@@ -783,75 +780,80 @@ static char* interpret_move(const game_state* state,
         button = CURSOR_DOWN;
     else if (button == 'a' || button == 'A')
         button = CURSOR_LEFT;
+    else if (button == CURSOR_SELECT2)
+        button = CURSOR_SELECT;
 
     if (button != CURSOR_UP && button != CURSOR_DOWN && button != CURSOR_LEFT &&
-        button != CURSOR_RIGHT && button != CURSOR_SELECT &&
-        button != CURSOR_SELECT2 && button != '\b' && button != LEFT_RELEASE)
+        button != CURSOR_RIGHT && button != CURSOR_SELECT && button != '\b' &&
+        button != LEFT_BUTTON && button != LEFT_DRAG && button != LEFT_RELEASE)
         return NULL;
 
     int w = state->w, h = state->h;
     x = (x - BORDER) / ds->tilesize;
     y = (y - BORDER) / ds->tilesize;
 
-    if (button == LEFT_RELEASE) {
-        if (x < 0 || x >= w || y < 0 || y >= h || !state->grid[y * w + x])
+    if (button == LEFT_BUTTON) {
+        if (!state->grid[y * w + x])
             return NULL;
-
-        if (!ui->visible) {
-            ui->visible = true;
-            ui->show_dests = 1;
-            ui->cx = x;
-            ui->cy = y;
-            return UI_UPDATE;
-        }
-
-        if (ui->cx == x && ui->cy == y) {
-            if (ui->show_dests != 1)
-                ui->show_dests = 1;
-            else
-                ui->visible = false;
-            return UI_UPDATE;
-        }
+        ui->visible = true;
         ui->show_dests = 1;
+        ui->cx = x;
+        ui->cy = y;
+        return UI_UPDATE;
+    }
 
+    if (button == LEFT_DRAG) {
         int dx = x - ui->cx, dy = y - ui->cy;
         if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2) {
-            /* Not a knights move away, change position
-             * instead of making a move */
-            ui->cx = x;
-            ui->cy = y;
-            return UI_UPDATE;
+            return NULL;
         }
-
-        /* This ugly formula finds the index i of {dx,dy} in knight_moves */
-        int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
 
         int cur_pos = ui->cy * w + ui->cx;
-        char* cur_conns = state->conn_pairs + 2 * cur_pos;
-        bool* perm_conns = state->start_pairs + 2 * cur_pos;
-
-        if ((perm_conns[0] && cur_conns[0] - '0' == i) ||
-            (perm_conns[1] && cur_conns[1] - '0' == i)) {
-            ui->cx = x;
-            ui->cy = y;
-            return UI_UPDATE;
+        int new_pos = attempt_move(cur_pos, (point){dx, dy}, w, h);
+        if (new_pos == -1) {
+            return NULL;
         }
 
-        int new_pos = y * w + x;
+        int index = DX_DY_TO_KNIGHT_INDEX(dx, dy);
+        char* cur_conns = state->conn_pairs + 2 * cur_pos;
         char* new_conns = state->conn_pairs + 2 * new_pos;
 
-        if (state->grid[new_pos] &&
-            (new_conns[0] == '8' || new_conns[1] == '8' ||
-             (new_conns[0] - '0' + 4) % 8 == i ||
-             (new_conns[1] - '0' + 4) % 8 == i)) {
-            char* buffer = snewn(15, char);
-            sprintf(buffer, "%d%d%d", dx + 2, dy + 2, ui->cy * w + ui->cx);
-            ui->cx = x;
-            ui->cy = y;
-            return buffer;
+        if ((state->opposite_ends[cur_pos] < 0 && cur_conns[0] != index &&
+             cur_conns[1] != index) ||
+            (state->opposite_ends[new_pos] < 0 &&
+             new_conns[0] != (index + 4) % 8 &&
+             new_conns[1] != (index + 4) % 8)) {
+            return NULL;
         }
 
-        return NULL;
+        int num_chars;
+        sprintf(ui->drag_moves + ui->moves_size,
+                ui->moves_size ? ".%d%d%n" : "%d%d%n", index, cur_pos,
+                &num_chars);
+        ui->moves_size += num_chars;
+
+        ui->cx = x;
+        ui->cy = y;
+
+        if (ui->moves_buffered - ui->moves_size < 20) {
+            ui->moves_buffered += 20;
+            ui->drag_moves =
+                srealloc(ui->drag_moves, sizeof(char) * ui->moves_buffered);
+        }
+
+        return UI_UPDATE;
+    }
+
+    if (button == LEFT_RELEASE) {
+        ui->visible = false;
+        if (!ui->moves_size) {
+            return UI_UPDATE;
+        }
+        ui->moves_size = 0;
+        ui->moves_buffered = 20;
+        char* moves = ui->drag_moves;
+        ui->drag_moves = snewn(20, char);
+        return moves;
     }
 
     if (!ui->visible) {
@@ -901,9 +903,11 @@ static char* interpret_move(const game_state* state,
     } else if (button == CURSOR_LEFT) {
         moves[0] = 5;
         moves[1] = 6;
-    } else {
+    } else if (button == CURSOR_UP) {
         moves[0] = 7;
         moves[1] = 0;
+    } else {
+        assert(!"Unhandled input!");
     }
 
     int i;
@@ -942,7 +946,7 @@ static char* interpret_move(const game_state* state,
     point move = knight_moves[moves[0]];
     int new_pos = cur_pos + move.y * w + move.x;
 
-    sprintf(buffer, "%d%d%d", move.x + 2, move.y + 2, cur_pos);
+    sprintf(buffer, "%d%d", moves[0], cur_pos);
     ui->cx = new_pos % w;
     ui->cy = new_pos / w;
     return buffer;
@@ -964,97 +968,120 @@ int follow_path(game_state* gs, int start) {
 }
 
 static game_state* execute_move(const game_state* state, const char* move) {
-    int size = state->w * state->h;
+    int pos, w = state->w, h = state->h;
     game_state* gs = dup_game(state);
     const char* s = move;
-    int dx = *s - '0' - 2, dy = *(++s) - '0' - 2, pos = atoi(++s);
-    if (min(abs(dx), abs(dy)) != 1 || max(abs(dx), abs(dy)) != 2 || pos < 0 ||
-        pos >= size) {
-        return NULL;
-    }
+    while (true) {
+        int i, num_char;
+        sscanf(s, "%1d%d%n", &i, &pos, &num_char);
 
-    /* This ugly formula finds the index i of {dx, dy} in knight_moves */
-    int i = (dx > 0 ? 2 : 5) + (dx / abs(dx)) * (dy + (dy > 0 ? -1 : 0));
-
-    int start = pos;
-    char* start_conns = gs->conn_pairs + 2 * start;
-    if (i != start_conns[0] - '0' && i != start_conns[1] - '0') {
-        /* This is a new connection, not a backtrack. */
-        start_conns[start_conns[1] == '8'] = i + '0';
-        pos = pos + dy * gs->w + dx;
-        char* conns = gs->conn_pairs + 2 * pos;
-        i = (i + 4) % 8;
-        conns[conns[1] == '8'] = i + '0';
-
-        if (gs->opposite_ends[start] == pos) {
-            /* This connection creates a loop, mark each cell with -3 */
-            gs->opposite_ends[start] = -3;
-            gs->opposite_ends[pos] = -3;
-            int new_pos = pos;
-            while (new_pos != start) {
-                i = (conns[0] - '0' == i ? conns[1] : conns[0]) - '0';
-                new_pos =
-                    new_pos + knight_moves[i].y * gs->w + knight_moves[i].x;
-                conns = gs->conn_pairs + 2 * new_pos;
-                i = (i + 4) % 8;
-                gs->opposite_ends[new_pos] = -3;
-            }
-        } else {
-            connect_ends(gs->opposite_ends, start, pos);
-
-            if (gs->opposite_ends[pos] == -1 &&
-                (conns[0] + conns[1] + gs->grid[pos]) % 2 == 1)
-                gs->opposite_ends[pos] = -2;
-
-            if (gs->opposite_ends[start] == -1 &&
-                (start_conns[0] + start_conns[1] + gs->grid[start]) % 2 == 1)
-                gs->opposite_ends[start] = -2;
+        if (i < 0 || i > 7 || pos < 0 || pos >= w * h) {
+            sfree(gs);
+            return NULL;
         }
-    } else {
-        /* The user is backtracking, remove the connection */
-        start_conns[i == start_conns[1] - '0'] = '8';
-        pos = pos + dy * gs->w + dx;
+
+        int start = pos;
+        pos = attempt_move(pos, knight_moves[i], w, h);
+        if (pos == -1 || gs->opposite_ends[pos] == -1) {
+            sfree(gs);
+            return NULL;
+        }
+
+        char* start_conns = gs->conn_pairs + 2 * start;
         char* conns = gs->conn_pairs + 2 * pos;
-        i = (i + 4) % 8;
-        conns[i == conns[1] - '0'] = '8';
 
-        if (gs->opposite_ends[start] == -3) {
-            /* This move removes an edge from a loop. Remove all error marks
-             * unless the connection angles are incorrect (in that case, set
-             * them to -2). */
-            int new_pos = pos;
-            while (new_pos != start) {
-                i = conns[i == conns[0] - '0'] - '0';
-                new_pos =
-                    new_pos + knight_moves[i].y * gs->w + knight_moves[i].x;
-                conns = gs->conn_pairs + 2 * new_pos;
-                i = (i + 4) % 8;
-                if ((conns[0] + conns[1] + gs->grid[new_pos]) % 2 == 0)
-                    gs->opposite_ends[new_pos] = -1;
-                else
-                    gs->opposite_ends[new_pos] = -2;
-            }
-            gs->opposite_ends[start] = pos;
-            gs->opposite_ends[pos] = start;
-        } else {
-            if (gs->opposite_ends[start] < 0) {
-                gs->opposite_ends[start] = follow_path(gs, start);
-                gs->opposite_ends[gs->opposite_ends[start]] = start;
+        if ((i == start_conns[0] - '0' && gs->start_pairs[2 * start]) ||
+            (i == start_conns[1] - '0' && gs->start_pairs[2 * start + 1])) {
+            /* Ignore attempts to remove permanent connections */
+            s += num_char;
+            if (*s) {
+                s++;
+                continue;
             } else {
-                gs->opposite_ends[start] = start;
-            }
-
-            if (gs->opposite_ends[pos] < 0) {
-                gs->opposite_ends[pos] = follow_path(gs, pos);
-                gs->opposite_ends[gs->opposite_ends[pos]] = pos;
-            } else {
-                gs->opposite_ends[pos] = pos;
+                break;
             }
         }
-    }
 
-    gs->cx = pos % gs->w;
-    gs->cy = pos / gs->w;
+        if (i != start_conns[0] - '0' && i != start_conns[1] - '0') {
+            /* This is a new connection, not a backtrack. */
+            start_conns[start_conns[1] == '8'] = i + '0';
+            i = (i + 4) % 8;
+            conns[conns[1] == '8'] = i + '0';
+
+            if (gs->opposite_ends[start] == pos) {
+                /* This connection creates a loop, mark each cell with -3 */
+                gs->opposite_ends[start] = -3;
+                gs->opposite_ends[pos] = -3;
+                int new_pos = pos;
+                while (new_pos != start) {
+                    i = conns[i == conns[0] - '0'] - '0';
+                    new_pos =
+                        new_pos + knight_moves[i].y * w + knight_moves[i].x;
+                    conns = gs->conn_pairs + 2 * new_pos;
+                    i = (i + 4) % 8;
+                    gs->opposite_ends[new_pos] = -3;
+                }
+            } else {
+                connect_ends(gs->opposite_ends, start, pos);
+
+                if (gs->opposite_ends[pos] == -1 &&
+                    (conns[0] + conns[1] + gs->grid[pos]) % 2 == 1)
+                    gs->opposite_ends[pos] = -2;
+
+                if (gs->opposite_ends[start] == -1 &&
+                    (start_conns[0] + start_conns[1] + gs->grid[start]) % 2 ==
+                        1)
+                    gs->opposite_ends[start] = -2;
+            }
+        } else {
+            /* The user is backtracking, remove the connection */
+            start_conns[i == start_conns[1] - '0'] = '8';
+            i = (i + 4) % 8;
+            conns[i == conns[1] - '0'] = '8';
+
+            if (gs->opposite_ends[start] == -3) {
+                /* This move removes an edge from a loop. Remove all error marks
+                 * unless the connection angles are incorrect (in that case, set
+                 * them to -2). */
+                int new_pos = pos;
+                while (new_pos != start) {
+                    i = conns[i == conns[0] - '0'] - '0';
+                    new_pos =
+                        new_pos + knight_moves[i].y * w + knight_moves[i].x;
+                    conns = gs->conn_pairs + 2 * new_pos;
+                    i = (i + 4) % 8;
+                    if ((conns[0] + conns[1] + gs->grid[new_pos]) % 2 == 0)
+                        gs->opposite_ends[new_pos] = -1;
+                    else
+                        gs->opposite_ends[new_pos] = -2;
+                }
+                gs->opposite_ends[start] = pos;
+                gs->opposite_ends[pos] = start;
+            } else {
+                if (gs->opposite_ends[start] < 0) {
+                    gs->opposite_ends[start] = follow_path(gs, start);
+                    gs->opposite_ends[gs->opposite_ends[start]] = start;
+                } else {
+                    gs->opposite_ends[start] = start;
+                }
+
+                if (gs->opposite_ends[pos] < 0) {
+                    gs->opposite_ends[pos] = follow_path(gs, pos);
+                    gs->opposite_ends[gs->opposite_ends[pos]] = pos;
+                } else {
+                    gs->opposite_ends[pos] = pos;
+                }
+            }
+        }
+        s += num_char;
+        if (*s) {
+            s++;
+        } else {
+            break;
+        }
+    }
+    gs->cx = pos % w;
+    gs->cy = pos / w;
 
     return gs;
 }
@@ -1132,7 +1159,13 @@ static void game_redraw(drawing* dr,
                         const game_ui* ui,
                         float animtime,
                         float flashtime) {
-    int w = state->w, h = state->h;
+    game_state* gs;
+    if (ui->moves_size) {
+        gs = execute_move(state, ui->drag_moves);
+    } else {
+        gs = dup_game(state);
+    }
+    int w = gs->w, h = gs->h;
 
     /* Background */
     draw_rect(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
@@ -1151,14 +1184,14 @@ static void game_redraw(drawing* dr,
     int i;
     for (i = 0; i < w * h; i++) {
         int x = i % w, y = i / w;
-        if (!state->grid[i]) {
+        if (!gs->grid[i]) {
             draw_rect(dr, BORDER + x * ds->tilesize, BORDER + y * ds->tilesize,
                       ds->tilesize, ds->tilesize, COL_OUTLINE);
-        } else if (state->grid[i] == 2) {
+        } else if (gs->grid[i] == 2) {
             draw_rect(dr, BORDER + (x + 0.4) * ds->tilesize,
                       BORDER + (y + 0.4) * ds->tilesize, ds->tilesize * 0.2 + 1,
                       ds->tilesize * 0.2 + 1, COL_OUTLINE);
-        } else if (state->grid[i] == 1) {
+        } else if (gs->grid[i] == 1) {
             draw_circle(dr, BORDER + (x + 0.5) * ds->tilesize,
                         BORDER + (y + 0.5) * ds->tilesize, 0.2 * ds->tilesize,
                         COL_BACKGROUND, COL_OUTLINE);
@@ -1167,83 +1200,51 @@ static void game_redraw(drawing* dr,
 
     /* Cursor and Available moves */
     if (ui->visible) {
-        int i; /* I kinda like this fancy, if oddlooking, cursor */
-        for (i = 0; i < 3; i++)
-            draw_rect_corners(dr, BORDER + (ui->cx + 0.5) * ds->tilesize,
-                              BORDER + (ui->cy + 0.5) * ds->tilesize,
-                              ds->tilesize / 4 + i, COL_SELECTED);
+        draw_rect_corners(dr, BORDER + (ui->cx + 0.5) * ds->tilesize,
+                          BORDER + (ui->cy + 0.5) * ds->tilesize,
+                          ds->tilesize / 4, COL_SELECTED);
 
         if (ui->show_dests) {
-            int i, dest[8], cur_pos = (ui->cy * w + ui->cx);
-            char* cur_conns = state->conn_pairs + 2 * cur_pos;
-            bool cur_filled = cur_conns[0] < '8' && cur_conns[1] < '8';
-
-            /* Find all possible moves */
+            int i, cur_pos = (ui->cy * w + ui->cx);
             for (i = 0; i < 8; i++) {
-                int new = attempt_move(cur_pos, knight_moves[i], w, h);
-                if (new == -1) {
-                    dest[i] = -1;
+                int neigh = attempt_move(cur_pos, knight_moves[i], w, h);
+                if (neigh == -1 || gs->opposite_ends[neigh] == -1 ||
+                    (ui->show_dests > 1 && (gs->grid[neigh] + i) % 2)) {
                     continue;
                 }
-                char* new_conns = state->conn_pairs + 2 * new;
-                bool new_filled = new_conns[0] < '8' && new_conns[1] < '8';
 
-                if (!state->grid[cur_pos] || !state->grid[new])
-                    dest[i] = -1;
-                else if (cur_filled || new_filled)
-                    dest[i] = -1;
-                else if ((cur_conns[0] + cur_conns[1] + state->grid[cur_pos] +
-                          i) %
-                             2 &&
-                         (cur_conns[0] < '8' || cur_conns[1] < '8'))
-                    dest[i] = -1;
-                else
-                    dest[i] = new;
+                int x1 = (cur_pos % w + 0.5) * ds->tilesize + BORDER,
+                    y1 = (cur_pos / w + 0.5) * ds->tilesize + BORDER,
+                    x2 = (neigh % w + 0.5) * ds->tilesize + BORDER,
+                    y2 = (neigh / w + 0.5) * ds->tilesize + BORDER;
+                draw_line(dr, x1, y1, x2, y2, COL_SELECTED);
             }
-
-            /* Disambiguate moves for keyboard controls */
-            if (ui->show_dests > 1)
-                for (i = 0; i < 4; i++)
-                    if (dest[2 * i] > -1 && dest[(2 * i + 7) % 8] > -1) {
-                        if (ui->show_dests == 3)
-                            dest[(2 * i + 7) % 8] = -1;
-                        else
-                            dest[2 * i] = -1;
-                    }
-
-            /* Outline reachable destinations */
-            for (i = 0; i < 8; i++)
-                if (dest[i] > -1)
-                    draw_rect_corners(
-                        dr, BORDER + (dest[i] % w + 0.5) * ds->tilesize,
-                        BORDER + (dest[i] / w + 0.5) * ds->tilesize,
-                        ds->tilesize / 4, COL_SELECTED);
         }
     }
 
     /* Tour path */
     for (i = 0; i < 2 * w * h; i++) {
-        if (state->conn_pairs[i] != '8') {
-            point move = knight_moves[state->conn_pairs[i] - '0'];
-            int a = i / 2, b = a + move.y * w + move.x;
+        if (gs->conn_pairs[i] != '8') {
+            point move = knight_moves[gs->conn_pairs[i] - '0'];
+            int pos1 = i / 2, pos2 = pos1 + move.y * w + move.x;
 
-            int ax = (a % w + 0.5) * ds->tilesize + BORDER,
-                ay = (a / w + 0.5) * ds->tilesize + BORDER,
-                bx = (b % w + 0.5) * ds->tilesize + BORDER,
-                by = (b / w + 0.5) * ds->tilesize + BORDER,
-                color = (state->opposite_ends[a] < -1
-                             ? COL_ERROR
-                             : state->start_pairs[i] ? COL_OUTLINE : COL_PATH),
-                dx = bx - ax, dy = by - ay;
+            int x1 = (pos1 % w + 0.5) * ds->tilesize + BORDER,
+                y1 = (pos1 / w + 0.5) * ds->tilesize + BORDER,
+                x2 = (pos2 % w + 0.5) * ds->tilesize + BORDER,
+                y2 = (pos2 / w + 0.5) * ds->tilesize + BORDER,
+                color = (gs->opposite_ends[pos1] < -1 ? COL_ERROR
+                         : gs->start_pairs[i]         ? COL_OUTLINE
+                                                      : COL_PATH),
+                dx = x2 - x1, dy = y2 - y1;
 
-            draw_line(dr, ax, ay, bx - dx / 2, by - dy / 2, color);
+            draw_line(dr, x1, y1, x2 - dx / 2, y2 - dy / 2, color);
         }
     }
 
     /* Cell Bulbs */
     for (i = 0; i < w * h; i++)
-        if (state->opposite_ends[i] < 0 && state->conn_pairs[2 * i] < '8') {
-            int color = state->opposite_ends[i] == -1 ? COL_PATH : COL_ERROR,
+        if (gs->opposite_ends[i] < 0 && gs->conn_pairs[2 * i] < '8') {
+            int color = gs->opposite_ends[i] == -1 ? COL_PATH : COL_ERROR,
                 x = (i % w + 0.5) * ds->tilesize + BORDER,
                 y = (i / w + 0.5) * ds->tilesize + BORDER;
             draw_circle(dr, x, y, 0.1 * ds->tilesize, COL_PATH, color);
@@ -1251,6 +1252,7 @@ static void game_redraw(drawing* dr,
 
     draw_update(dr, 0, 0, w * ds->tilesize + 2 * BORDER,
                 h * ds->tilesize + 2 * BORDER);
+    sfree(gs);
 }
 
 static float game_anim_length(const game_state* oldstate,

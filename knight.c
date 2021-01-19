@@ -885,7 +885,7 @@ static char* interpret_move(const game_state* state,
         return UI_UPDATE;
     }
 
-    if (button == CURSOR_SELECT || button == CURSOR_SELECT2) {
+    if (button == CURSOR_SELECT) {
         if (cur_conns[0] == '8' && cur_conns[1] == '8')
             ui->show_dests = (ui->show_dests + 1) % 4;
         else
@@ -1205,19 +1205,22 @@ static void game_redraw(drawing* dr,
                           ds->tilesize / 4, COL_SELECTED);
 
         if (ui->show_dests) {
-            int i, cur_pos = (ui->cy * w + ui->cx);
+            int i, cur_pos = (ui->cy * w + ui->cx),
+                   x1 = (cur_pos % w + 0.5) * ds->tilesize + BORDER,
+                   y1 = (cur_pos / w + 0.5) * ds->tilesize + BORDER;
             for (i = 0; i < 8; i++) {
                 int neigh = attempt_move(cur_pos, knight_moves[i], w, h);
-                if (neigh == -1 || gs->opposite_ends[neigh] == -1 ||
-                    (ui->show_dests > 1 && (gs->grid[neigh] + i) % 2)) {
+                if (neigh == -1 || gs->opposite_ends[neigh] == -1) {
                     continue;
                 }
 
-                int x1 = (cur_pos % w + 0.5) * ds->tilesize + BORDER,
-                    y1 = (cur_pos / w + 0.5) * ds->tilesize + BORDER,
-                    x2 = (neigh % w + 0.5) * ds->tilesize + BORDER,
+                int x2 = (neigh % w + 0.5) * ds->tilesize + BORDER,
                     y2 = (neigh / w + 0.5) * ds->tilesize + BORDER;
                 draw_line(dr, x1, y1, x2, y2, COL_SELECTED);
+
+                if (ui->show_dests > 1 && (ui->show_dests + i) % 2)
+                    draw_rect_corners(dr, x2, y2, ds->tilesize / 4,
+                                      COL_SELECTED);
             }
         }
     }

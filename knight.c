@@ -915,15 +915,16 @@ static char* interpret_move(const game_state* state,
         assert(!"Unhandled input!");
     }
 
-    int new = attempt_move(cur_pos, knight_moves[move], w, h);
+    int new_pos = attempt_move(cur_pos, knight_moves[move], w, h);
 
-    if (new == -1 || (state->opposite_ends[new] < 0 &&
-                      cur_conns[0] - '0' != move && cur_conns[1] - '0' != move))
+    if (new_pos == -1 ||
+        (state->opposite_ends[new_pos] < 0 && cur_conns[0] - '0' != move &&
+         cur_conns[1] - '0' != move))
         return NULL;
 
-    int new_pos = cur_pos + knight_moves[move].y * w + knight_moves[move].x;
     ui->cx = new_pos % w;
     ui->cy = new_pos / w;
+    ui->show_dests = 2 + (move + state->grid[new_pos] + 1) % 2;
 
     char* buffer = snewn(50, char);
     sprintf(buffer, "%d%d", move, cur_pos);

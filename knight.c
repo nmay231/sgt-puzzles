@@ -851,13 +851,24 @@ static char* interpret_move(const game_state* state,
         return UI_UPDATE;
     }
 
-    if (button == '\b') {
-        printf("Deleting not implemented!\n");
-        return NULL;
-    }
-
     int cur_pos = ui->cy * w + ui->cx;
     char* cur_conns = state->conn_pairs + 2 * cur_pos;
+
+    if (button == '\b') {
+        if (!ui->visible)
+            return NULL;
+
+        char* buffer = snewn(50, char);
+        int n = 0;
+        if (cur_conns[0] < '8') {
+            sprintf(buffer, "%d%d%n", cur_conns[0] - '0', cur_pos, &n);
+        }
+        if (cur_conns[1] < '8') {
+            sprintf(buffer + n, n ? ".%d%d" : "%d%d", cur_conns[1] - '0',
+                    cur_pos);
+        }
+        return buffer;
+    }
 
     if (!ui->show_dests) {
         if (button == CURSOR_UP) {
@@ -869,75 +880,53 @@ static char* interpret_move(const game_state* state,
         } else if (button == CURSOR_RIGHT) {
             ui->cx = min(ui->cx + 1, state->w - 1);
         } else if (state->grid[cur_pos]) {
-            ui->show_dests = 2;
+            if (state->opposite_ends[cur_pos] == cur_pos) {
+                ui->show_dests = 2;
+            } else {
+                ui->show_dests = 2 + (cur_conns[0] + cur_conns[1] +
+                                      state->grid[cur_pos] + 1) %
+                                         2;
+            }
         }
         return UI_UPDATE;
     }
 
     if (button == CURSOR_SELECT) {
-        if (cur_conns[0] == '8' && cur_conns[1] == '8')
-            ui->show_dests = (ui->show_dests + 1) % 4;
-        else
-            ui->show_dests = (ui->show_dests ? 0 : 2);
+        int one = ((state->opposite_ends[cur_pos] == cur_pos) ||
+                   (cur_conns[0] + cur_conns[1] + state->grid[cur_pos]) % 2)
+                      ? 1
+                      : -1;
+        ui->show_dests = (ui->show_dests + one) % 4;
+        if (ui->show_dests == 1)
+            ui->show_dests = 0;
         return UI_UPDATE;
     }
 
-    int moves[2];
+    int move = ui->show_dests % 2;
     if (button == CURSOR_RIGHT) {
-        moves[0] = 1;
-        moves[1] = 2;
+        move += 1;
     } else if (button == CURSOR_DOWN) {
-        moves[0] = 3;
-        moves[1] = 4;
+        move += 3;
     } else if (button == CURSOR_LEFT) {
-        moves[0] = 5;
-        moves[1] = 6;
+        move += 5;
     } else if (button == CURSOR_UP) {
-        moves[0] = 7;
-        moves[1] = 0;
+        move = (move + 7) % 8;
     } else {
         assert(!"Unhandled input!");
     }
 
-    int i;
-    for (i = 0; i < 2; i++) {
-        int new = attempt_move(cur_pos, knight_moves[moves[i]], w, h);
-        char* new_conns = state->conn_pairs + 2 * new;
+    int new = attempt_move(cur_pos, knight_moves[move], w, h);
 
-        if (new == -1 || !state->grid[cur_pos] || !state->grid[new])
-            moves[i] = -1;
-        else if (((cur_conns[0] < '8' && cur_conns[1] < '8') ||
-                  (new_conns[0] < '8' && new_conns[1] < '8')) &&
-                 (i + 4) % 8 + '0' != new_conns[0] &&
-                 (i + 4) % 8 + '0' != new_conns[1])
-            moves[i] = -1;
-        else if ((cur_conns[0] < '8' || cur_conns[1] < '8') &&
-                 (cur_conns[0] + cur_conns[1] + state->grid[cur_pos] + i + 1) %
-                     2)
-            moves[i] = -1;
-    }
-
-    if (moves[0] == -1 && moves[1] == -1)
+    if (new == -1 || (state->opposite_ends[new] < 0 &&
+                      cur_conns[0] - '0' != move && cur_conns[1] - '0' != move))
         return NULL;
 
-    if (moves[0] > -1 && moves[1] > -1) {
-        if (ui->show_dests == 1) {
-            ui->show_dests = 2;
-            return UI_UPDATE;
-        } else if (ui->show_dests == 3) {
-            moves[0] = moves[1];
-        }
-    } else if (moves[0] == -1) {
-        moves[0] = moves[1];
-    }
-
-    char* buffer = snewn(50, char);
-    point move = knight_moves[moves[0]];
-    int new_pos = cur_pos + move.y * w + move.x;
-
-    sprintf(buffer, "%d%d", moves[0], cur_pos);
+    int new_pos = cur_pos + knight_moves[move].y * w + knight_moves[move].x;
     ui->cx = new_pos % w;
     ui->cy = new_pos / w;
+
+    char* buffer = snewn(50, char);
+    sprintf(buffer, "%d%d", move, cur_pos);
     return buffer;
 }
 

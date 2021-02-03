@@ -815,17 +815,6 @@ static char* interpret_move(const game_state* state,
         }
 
         int index = DX_DY_TO_KNIGHT_INDEX(dx, dy);
-        char* cur_conns = state->conn_pairs + 2 * cur_pos;
-        char* new_conns = state->conn_pairs + 2 * new_pos;
-
-        if ((state->opposite_ends[cur_pos] < 0 && cur_conns[0] != index &&
-             cur_conns[1] != index) ||
-            (state->opposite_ends[new_pos] < 0 &&
-             new_conns[0] != (index + 4) % 8 &&
-             new_conns[1] != (index + 4) % 8)) {
-            return NULL;
-        }
-
         int num_chars;
         sprintf(ui->drag_moves + ui->moves_size,
                 ui->moves_size ? ".%d%d%n" : "%d%d%n", index, cur_pos,
@@ -975,14 +964,9 @@ static game_state* execute_move(const game_state* state, const char* move) {
         int i, num_char;
         sscanf(s, "%1d%d%n", &i, &pos, &num_char);
 
-        if (i < 0 || i > 7 || pos < 0 || pos >= w * h) {
-            sfree(gs);
-            return NULL;
-        }
-
         int start = pos;
-        pos = attempt_move(pos, knight_moves[i], w, h);
-        if (pos == -1 || gs->opposite_ends[pos] == -1) {
+        if (i < 0 || i > 7 || start < 0 || start >= w * h ||
+            -1 == (pos = attempt_move(start, knight_moves[i], w, h))) {
             sfree(gs);
             return NULL;
         }
@@ -990,17 +974,17 @@ static game_state* execute_move(const game_state* state, const char* move) {
         char* start_conns = gs->conn_pairs + 2 * start;
         char* conns = gs->conn_pairs + 2 * pos;
 
+        if ((i != start_conns[0] - '0' && i != start_conns[1] - '0' &&
+             gs->opposite_ends[start] < 0) ||
+            ((i + 4) % 8 != conns[0] - '0' && (i + 4) % 8 != conns[1] - '0' &&
+             gs->opposite_ends[pos] < 0))
+            /* Ignore malformed moves */
+            goto increment_move;
+
         if ((i == start_conns[0] - '0' && gs->start_pairs[2 * start]) ||
-            (i == start_conns[1] - '0' && gs->start_pairs[2 * start + 1])) {
+            (i == start_conns[1] - '0' && gs->start_pairs[2 * start + 1]))
             /* Ignore attempts to remove permanent connections */
-            s += num_char;
-            if (*s) {
-                s++;
-                continue;
-            } else {
-                break;
-            }
-        }
+            goto increment_move;
 
         if (i != start_conns[0] - '0' && i != start_conns[1] - '0') {
             /* This is a new connection, not a backtrack. */
@@ -1040,12 +1024,12 @@ static game_state* execute_move(const game_state* state, const char* move) {
             conns[i == conns[1] - '0'] = '8';
 
             if (gs->opposite_ends[start] == -3) {
-                /* This move removes an edge from a loop. Remove all error marks
-                 * unless the connection angles are incorrect (in that case, set
-                 * them to -2). */
+                /* This move removes an edge from an invalid loop. Remove all
+                 * error marks unless the connection angles are incorrect (in
+                 * that case, set them to -2). */
                 int new_pos = pos;
                 while (new_pos != start) {
-                    i = conns[i == conns[0] - '0'] - '0';
+                    i = conns[i == conns[0] - '0' || conns[0] == '8'] - '0';
                     new_pos =
                         new_pos + knight_moves[i].y * w + knight_moves[i].x;
                     conns = gs->conn_pairs + 2 * new_pos;
@@ -1073,6 +1057,8 @@ static game_state* execute_move(const game_state* state, const char* move) {
                 }
             }
         }
+
+    increment_move:
         s += num_char;
         if (*s) {
             s++;
@@ -1210,7 +1196,7 @@ static void game_redraw(drawing* dr,
                    y1 = (cur_pos / w + 0.5) * ds->tilesize + BORDER;
             for (i = 0; i < 8; i++) {
                 int neigh = attempt_move(cur_pos, knight_moves[i], w, h);
-                if (neigh == -1 || gs->opposite_ends[neigh] == -1) {
+                if (neigh == -1 || gs->opposite_ends[neigh] < 0) {
                     continue;
                 }
 
